@@ -1,0 +1,26 @@
+{
+  "name": "moex-bot",
+  "version": "0.1.0",
+  "description": "Торговый бот для Мосбиржи (Tinkoff Invest API)",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "start": "tsx src/index.ts"
+  },
+  "keywords": ["moex", "tinkoff", "trading", "bot"],
+  "license": "ISC",
+  "packageManager": "pnpm@9.1.2",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.0.0"
+  }
+}

@@ -1,0 +1,12 @@
+---
+description: Использование pnpm в качестве пакетного менеджера
+alwaysApply: true
+---
+
+# Пакетный менеджер
+
+- В проекте используется **pnpm** (не npm и не yarn).
+- Установка зависимостей: `pnpm install`.
+- Добавление пакета: `pnpm add <pkg>` или `pnpm add -D <pkg>` для dev.
+- Запуск скриптов: `pnpm run <script>` или `pnpm <script>`.
+- При создании или обновлении проекта создавать/обновлять `package.json` и при необходимости `pnpm-lock.yaml`; не добавлять `package-lock.json` или `yarn.lock`.
