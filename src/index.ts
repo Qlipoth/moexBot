@@ -1,6 +1,4 @@
 /**
- * Точка входа moex-bot.
- * Торговый бот для Мосбиржи (Tinkoff Invest API).
+ * Точка входа: запуск Telegram-бота (см. src/bot/index.ts).
  */
-
-console.log('moex-bot');
+import './bot/index.js';

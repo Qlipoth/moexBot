@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "description": "Торговый бот для Мосбиржи (Tinkoff Invest API)",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/bot.js",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc",
+    "build": "node build.js",
+    "preview": "node dist/bot.js",
     "start": "tsx src/index.ts"
   },
   "keywords": ["moex", "tinkoff", "trading", "bot"],
@@ -16,10 +17,12 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "grammy": "^1.38.4"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "esbuild": "^0.27.0",
     "tsx": "^4.19.2",
     "typescript": "^5.0.0"
   }
