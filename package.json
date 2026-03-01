@@ -10,13 +10,21 @@
     "preview": "node dist/bot.js",
     "start": "tsx src/index.ts"
   },
-  "keywords": ["moex", "tinkoff", "trading", "bot"],
+  "keywords": [
+    "moex",
+    "tinkoff",
+    "trading",
+    "bot"
+  ],
   "license": "ISC",
   "packageManager": "pnpm@9.1.2",
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "^2.11.0",
+    "@tinkoff/invest-js": "1.27.1-RC4",
+    "dayjs": "^1.11.19",
     "dotenv": "^16.4.5",
     "grammy": "^1.38.4"
   },

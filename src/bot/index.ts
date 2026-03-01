@@ -5,7 +5,24 @@
 import 'dotenv/config';
 import * as http from 'node:http';
 import { Bot, Keyboard } from 'grammy';
+import dayjs from 'dayjs';
+import 'dayjs/locale/ru.js';
+import { getFuturesLastPrices } from '../core/investClient.js';
 import { tradingState } from '../core/tradingState.js';
+
+dayjs.locale('ru');
+
+/** Тикеры фьючерсов для команды /market */
+const MARKET_FUTURES_TICKERS = ['GLDRUBF', 'IMOEXF', 'USDRUBF', 'SBERF', 'GAZPF'];
+
+/** Иконки для тикеров (по смыслу: золото, индекс, валюта, банк, газ) */
+const TICKER_ICONS: Record<string, string> = {
+  GLDRUBF: '🪙',
+  IMOEXF: '📊',
+  USDRUBF: '💵',
+  SBERF: '🏦',
+  GAZPF: '⛽',
+};
 
 const requiredEnvVars = ['BOT_TOKEN'];
 const missingVars = requiredEnvVars.filter(v => !process.env[v]);
@@ -98,12 +115,63 @@ bot.command('status', async ctx => {
 
 bot.command('market', async ctx => {
   const loadingMsg = await ctx.reply('Загрузка данных рынка...');
-  // TODO: запрос к Tinkoff API — инструменты, последние цены
-  await bot.api.editMessageText(
-    ctx.chat.id,
-    loadingMsg.message_id,
-    'Рынок: данные с Tinkoff Invest API пока не подключены.'
-  );
+  const token = process.env.TINKOFF_TOKEN;
+  if (!token) {
+    await bot.api.editMessageText(
+      ctx.chat.id,
+      loadingMsg.message_id,
+      'Рынок: не задан TINKOFF_TOKEN. Проверьте, что в .env в корне проекта есть строка: TINKOFF_TOKEN=ваш_токен'
+    );
+    return;
+  }
+  try {
+    const prices = await getFuturesLastPrices(token, MARKET_FUTURES_TICKERS);
+    if (prices.length === 0) {
+      await bot.api.editMessageText(
+        ctx.chat.id,
+        loadingMsg.message_id,
+        'Рынок: не удалось получить данные по фьючерсам.'
+      );
+      return;
+    }
+    const lines = prices.map(p => {
+      const icon = TICKER_ICONS[p.ticker] ?? '📈';
+      const timeStr = p.time
+        ? dayjs(p.time).format('DD.MM.YYYY')
+        : '';
+      const rublesStr =
+        p.priceRubles != null ? ` | ${p.priceRubles.toFixed(2)} ₽` : '';
+      let changeStr = '';
+      if (
+        p.previousClose != null &&
+        p.previousClose > 0
+      ) {
+        // Считаем от округлённых до 2 знаков цен (как на экране), чтобы совпадать с брокерскими приложениями
+        const lastR = Math.round(p.lastPrice * 100) / 100;
+        const prevR = Math.round(p.previousClose * 100) / 100;
+        const change = lastR - prevR;
+        const changePercent = (change / prevR) * 100;
+        const emoji = change >= 0 ? '📈' : '📉';
+        const sign = change >= 0 ? '+' : '−';
+        const absChange = Math.abs(change);
+        const absPercent = Math.abs(changePercent);
+        changeStr = ` <b>${emoji} ${sign}${absChange.toFixed(2)} (${sign}${absPercent.toFixed(2)}%)</b>`;
+      }
+      return `${icon} ${p.ticker}: ${p.lastPrice.toFixed(2)} п.${rublesStr}${changeStr}${timeStr ? ` (${timeStr})` : ''}`;
+    });
+    const text =
+      'Фьючерсы (последняя цена, изменение за день)\n\n' + lines.join('\n\n');
+    await bot.api.editMessageText(ctx.chat.id, loadingMsg.message_id, text, {
+      parse_mode: 'HTML',
+    });
+  } catch (err) {
+    console.error('Market error:', err);
+    await bot.api.editMessageText(
+      ctx.chat.id,
+      loadingMsg.message_id,
+      `Рынок: ошибка запроса — ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
 });
 
 // Любое сообщение — подсказка по кнопкам

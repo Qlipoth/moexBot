@@ -7,7 +7,7 @@ build({
   target: 'node18',
   outfile: 'dist/bot.js',
   format: 'esm',
-  external: ['grammy', 'dotenv'],
+  external: ['grammy', 'dotenv', '@tinkoff/invest-js'],
   minify: true,
   sourcemap: true,
   tsconfig: './tsconfig.json',
