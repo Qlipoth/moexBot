@@ -78,7 +78,7 @@ export async function getFuturesLastPrices(
 
   // Цена закрытия торговой сессии (price). eveningSessionPrice — вечерняя; для «за день» используем price
   const closePricesRes = await client.marketdata.getClosePrices({
-    instruments: uids.map(uid => ({ instrumentId: uid })),
+    instruments: uids.map((uid) => ({ instrumentId: uid })),
   });
   const previousCloseByUid = new Map<string, number>();
   for (const cp of closePricesRes.closePrices) {
@@ -88,19 +88,14 @@ export async function getFuturesLastPrices(
     }
   }
 
-  return lastPrices.map(lp => {
+  return lastPrices.map((lp) => {
     const info = tickerByUid.get(lp.instrumentUid);
     const ticker = info?.ticker ?? lp.figi;
     const name = info?.name ?? lp.figi;
     const lastPrice = quotationToNumber(lp.price);
     let priceRubles: number | undefined;
-    if (
-      info &&
-      info.minPriceIncrement > 0 &&
-      info.minPriceIncrementAmount !== undefined
-    ) {
-      priceRubles =
-        (lastPrice / info.minPriceIncrement) * info.minPriceIncrementAmount;
+    if (info && info.minPriceIncrement > 0 && info.minPriceIncrementAmount !== undefined) {
+      priceRubles = (lastPrice / info.minPriceIncrement) * info.minPriceIncrementAmount;
     }
     const previousClose = previousCloseByUid.get(lp.instrumentUid);
 

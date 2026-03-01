@@ -7,6 +7,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "node build.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "preview": "node dist/bot.js",
     "start": "tsx src/index.ts"
   },
@@ -31,6 +33,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "esbuild": "^0.27.0",
+    "prettier": "^3.8.1",
     "tsx": "^4.19.2",
     "typescript": "^5.0.0"
   }

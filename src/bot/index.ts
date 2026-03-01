@@ -25,7 +25,7 @@ const TICKER_ICONS: Record<string, string> = {
 };
 
 const requiredEnvVars = ['BOT_TOKEN'];
-const missingVars = requiredEnvVars.filter(v => !process.env[v]);
+const missingVars = requiredEnvVars.filter((v) => !process.env[v]);
 if (missingVars.length) {
   console.error('Missing env vars:', missingVars.join(', '));
   process.exit(1);
@@ -79,7 +79,7 @@ const welcomeMsg =
   'MOEX Bot\n\n' +
   'Кнопки: Start — подписка и запуск вотчеров, Stop — остановка, Status — состояние, Market — сводка по рынку.';
 
-bot.command('start', async ctx => {
+bot.command('start', async (ctx) => {
   subscribers.add(ctx.chat.id);
   tradingState.enable();
   await startWatchersOnce();
@@ -89,7 +89,7 @@ bot.command('start', async ctx => {
   });
 });
 
-bot.command('stop', async ctx => {
+bot.command('stop', async (ctx) => {
   subscribers.delete(ctx.chat.id);
   tradingState.disable();
   if (stopWatchers) {
@@ -97,13 +97,12 @@ bot.command('stop', async ctx => {
     stopWatchers = null;
   }
   console.log(`Stopped by chat ${ctx.chat.id}`);
-  await ctx.reply(
-    'Бот остановлен.\n• Торговля выключена\n• Вотчеры остановлены',
-    { reply_markup: mainKeyboard }
-  );
+  await ctx.reply('Бот остановлен.\n• Торговля выключена\n• Вотчеры остановлены', {
+    reply_markup: mainKeyboard,
+  });
 });
 
-bot.command('status', async ctx => {
+bot.command('status', async (ctx) => {
   const enabled = tradingState.isEnabled();
   const closeOnly = tradingState.isCloseOnlyMode();
   const status =
@@ -113,7 +112,7 @@ bot.command('status', async ctx => {
   await ctx.reply(status || 'Нет данных.', { reply_markup: mainKeyboard });
 });
 
-bot.command('market', async ctx => {
+bot.command('market', async (ctx) => {
   const loadingMsg = await ctx.reply('Загрузка данных рынка...');
   const token = process.env.TINKOFF_TOKEN;
   if (!token) {
@@ -134,18 +133,12 @@ bot.command('market', async ctx => {
       );
       return;
     }
-    const lines = prices.map(p => {
+    const lines = prices.map((p) => {
       const icon = TICKER_ICONS[p.ticker] ?? '📈';
-      const timeStr = p.time
-        ? dayjs(p.time).format('DD.MM.YYYY')
-        : '';
-      const rublesStr =
-        p.priceRubles != null ? ` | ${p.priceRubles.toFixed(2)} ₽` : '';
+      const timeStr = p.time ? dayjs(p.time).format('DD.MM.YYYY') : '';
+      const rublesStr = p.priceRubles != null ? ` | ${p.priceRubles.toFixed(2)} ₽` : '';
       let changeStr = '';
-      if (
-        p.previousClose != null &&
-        p.previousClose > 0
-      ) {
+      if (p.previousClose != null && p.previousClose > 0) {
         // Считаем от округлённых до 2 знаков цен (как на экране), чтобы совпадать с брокерскими приложениями
         const lastR = Math.round(p.lastPrice * 100) / 100;
         const prevR = Math.round(p.previousClose * 100) / 100;
@@ -159,8 +152,7 @@ bot.command('market', async ctx => {
       }
       return `${icon} ${p.ticker}: ${p.lastPrice.toFixed(2)} п.${rublesStr}${changeStr}${timeStr ? ` (${timeStr})` : ''}`;
     });
-    const text =
-      'Фьючерсы (последняя цена, изменение за день)\n\n' + lines.join('\n\n');
+    const text = 'Фьючерсы (последняя цена, изменение за день)\n\n' + lines.join('\n\n');
     await bot.api.editMessageText(ctx.chat.id, loadingMsg.message_id, text, {
       parse_mode: 'HTML',
     });
@@ -175,11 +167,11 @@ bot.command('market', async ctx => {
 });
 
 // Любое сообщение — подсказка по кнопкам
-bot.on('message:text', async ctx => {
+bot.on('message:text', async (ctx) => {
   await ctx.reply('Используйте кнопки ниже.', { reply_markup: mainKeyboard });
 });
 
-bot.catch(err => console.error('Bot error:', err));
+bot.catch((err) => console.error('Bot error:', err));
 
 // Shutdown
 async function shutdown(signal: string): Promise<void> {
@@ -197,7 +189,7 @@ process.on('SIGTERM', () => shutdown('SIGTERM').catch(console.error));
 
 console.log('Starting bot...');
 bot.start({
-  onStart: info => {
+  onStart: (info) => {
     console.log(`Bot @${info.username} is running`);
   },
 });
