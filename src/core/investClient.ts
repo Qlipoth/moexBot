@@ -6,10 +6,21 @@ import {
   TTechApiClient,
   InstrumentIdType,
   LastPriceType,
+  CandleInterval,
   type Quotation,
 } from '@tinkoff/invest-js';
 
 const FUTURES_CLASS_CODE = 'SPBFUT';
+
+/** Свеча для стратегий (timestamp в ms, OHLCV в пунктах/единицах). */
+export interface HistoricalCandleInput {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
 
 function quotationToNumber(q: Quotation | undefined): number {
   if (!q) return 0;
@@ -108,4 +119,60 @@ export async function getFuturesLastPrices(
       time: lp.time,
     };
   });
+}
+
+/**
+ * Возвращает instrument_uid фьючерса по тикеру (SPBFUT).
+ */
+export async function getFutureUid(
+  token: string,
+  ticker: string
+): Promise<string | null> {
+  const client = new TTechApiClient({ token });
+  try {
+    const { instrument } = await client.instruments.futureBy({
+      idType: InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
+      id: ticker,
+      classCode: FUTURES_CLASS_CODE,
+    });
+    return instrument?.uid ?? null;
+  } catch (e) {
+    console.error(`getFutureUid ${ticker}:`, e);
+    return null;
+  }
+}
+
+const CANDLE_LIMIT = 2400;
+
+/**
+ * Загружает исторические свечи по инструменту (instrument_uid).
+ * from/to — время в миллисекундах; interval — '1m' или '1h'.
+ */
+export async function getCandles(
+  token: string,
+  instrumentId: string,
+  from: number,
+  to: number,
+  interval: '1m' | '1h'
+): Promise<HistoricalCandleInput[]> {
+  const client = new TTechApiClient({ token });
+  const intervalEnum =
+    interval === '1h' ? CandleInterval.CANDLE_INTERVAL_HOUR : CandleInterval.CANDLE_INTERVAL_1_MIN;
+  const fromDate = new Date(from);
+  const toDate = new Date(to);
+  const { candles } = await client.marketdata.getCandles({
+    instrumentId,
+    from: fromDate,
+    to: toDate,
+    interval: intervalEnum,
+    limit: CANDLE_LIMIT,
+  });
+  return candles.map((c) => ({
+    timestamp: c.time ? c.time.getTime() : 0,
+    open: quotationToNumber(c.open),
+    high: quotationToNumber(c.high),
+    low: quotationToNumber(c.low),
+    close: quotationToNumber(c.close),
+    volume: c.volume ?? 0,
+  }));
 }

@@ -9,6 +9,7 @@ import dayjs from 'dayjs';
 import 'dayjs/locale/ru.js';
 import { getFuturesLastPrices } from '../core/investClient.js';
 import { tradingState } from '../core/tradingState.js';
+import { startAllWatchers } from '../market/watcher.js';
 
 dayjs.locale('ru');
 
@@ -66,11 +67,25 @@ async function startWatchersOnce(): Promise<void> {
     console.log('Watchers already running');
     return;
   }
-  // TODO: инициализация вотчеров по Tinkoff (свечи, сигналы)
-  stopWatchers = () => {
-    console.log('Watchers stopped (stub)');
-  };
-  console.log('Watchers started (stub)');
+  const token = process.env.TINKOFF_TOKEN;
+  if (!token) {
+    console.warn('Watchers: TINKOFF_TOKEN не задан — мониторинг точек входа отключён');
+    stopWatchers = () => {};
+    return;
+  }
+  stopWatchers = startAllWatchers(MARKET_FUTURES_TICKERS, {
+    token,
+    onAlert: async (msg) => {
+      for (const chatId of subscribers) {
+        try {
+          await bot.api.sendMessage(chatId, msg, { parse_mode: 'HTML' });
+        } catch (e) {
+          console.error(`Watcher alert to ${chatId}:`, e);
+        }
+      }
+    },
+  });
+  console.log('Watchers started (Bollinger 1h,', MARKET_FUTURES_TICKERS.length, 'tickers)');
 }
 
 // ——— Команды ———
