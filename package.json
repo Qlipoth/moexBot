@@ -10,7 +10,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "preview": "node dist/bot.js",
-    "start": "tsx src/index.ts"
+    "start": "tsx src/index.ts",
+    "calibrate": "tsx scripts/calibrateBollinger.ts"
   },
   "keywords": [
     "moex",

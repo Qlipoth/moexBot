@@ -23,7 +23,15 @@ const SIGNAL_THRESHOLD = 50;
 const SCORE_GAP = 15;
 const MIN_BAND_DISTANCE = 0.005;
 const BAND_SLIPPAGE_TOLERANCE = 0.002;
-const MIN_BOLLINGER_WIDTH_PCT = 0.012;
+/** Порог NARROW CHANNEL по тикеру (p10 по истории 1h за 30 дней). Обновить: pnpm run calibrate */
+const MIN_BOLLINGER_WIDTH_BY_TICKER: Record<string, number> = {
+  GLDRUBF: 0.01135,
+  IMOEXF: 0.00446,
+  USDRUBF: 0.00473,
+  SBERF: 0.00398,
+  GAZPF: 0.00641,
+};
+const DEFAULT_MIN_BOLLINGER_WIDTH_PCT = 0.005;
 
 interface BollingerContext {
   upper: number;
@@ -125,8 +133,10 @@ export const adaptiveBollingerStrategy = {
     const emaBias = getEmaBias(ctx);
     const bandWidthPct =
       middle > 0 ? (upper - lower) / middle : 0;
+    const minWidth =
+      MIN_BOLLINGER_WIDTH_BY_TICKER[ticker] ?? DEFAULT_MIN_BOLLINGER_WIDTH_PCT;
 
-    if (bandWidthPct < MIN_BOLLINGER_WIDTH_PCT) {
+    if (bandWidthPct < minWidth) {
       return {
         ready: true,
         signal: 'NONE',
@@ -196,7 +206,9 @@ export const adaptiveBollingerStrategy = {
     const emaBias = getEmaBias(ctx);
     const bandWidthPct =
       ctx.middle > 0 ? (ctx.upper - ctx.lower) / ctx.middle : 0;
-    if (bandWidthPct < MIN_BOLLINGER_WIDTH_PCT) return false;
+    const minWidth =
+      MIN_BOLLINGER_WIDTH_BY_TICKER[ticker] ?? DEFAULT_MIN_BOLLINGER_WIDTH_PCT;
+    if (bandWidthPct < minWidth) return false;
 
     if (signal === 'LONG') {
       return (
