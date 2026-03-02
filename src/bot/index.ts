@@ -7,7 +7,11 @@ import * as http from 'node:http';
 import { Bot, Keyboard } from 'grammy';
 import dayjs from 'dayjs';
 import 'dayjs/locale/ru.js';
-import { getFuturesLastPrices } from '../core/investClient.js';
+import {
+  ensureSandboxAccount,
+  getAccountBalance,
+  getFuturesLastPrices,
+} from '../core/investClient.js';
 import { tradingState } from '../core/tradingState.js';
 import { startAllWatchers } from '../market/watcher.js';
 
@@ -50,13 +54,15 @@ healthServer.listen(PORT, () => {
   console.log(`Health check on :${PORT} (GET / or /health)`);
 });
 
-// Клавиатура: start, stop, status, market
+// Клавиатура: start, stop, status, market, баланс
 const mainKeyboard = new Keyboard()
   .text('/start')
   .text('/stop')
   .row()
   .text('/status')
   .text('/market')
+  .row()
+  .text('Баланс')
   .resized();
 
 const subscribers = new Set<number>();
@@ -72,6 +78,12 @@ async function startWatchersOnce(): Promise<void> {
     console.warn('Watchers: TINKOFF_TOKEN не задан — мониторинг точек входа отключён');
     stopWatchers = () => {};
     return;
+  }
+  if (process.env.TINKOFF_PRODUCTION !== '1' && process.env.TINKOFF_PRODUCTION !== 'true') {
+    const accountId = await ensureSandboxAccount(token);
+    if (accountId) {
+      console.log('Sandbox: счёт готов, accountId:', accountId);
+    }
   }
   stopWatchers = startAllWatchers(MARKET_FUTURES_TICKERS, {
     token,
@@ -92,7 +104,7 @@ async function startWatchersOnce(): Promise<void> {
 
 const welcomeMsg =
   'MOEX Bot\n\n' +
-  'Кнопки: Start — подписка и запуск вотчеров, Stop — остановка, Status — состояние, Market — сводка по рынку.';
+  'Кнопки: Start — подписка и запуск вотчеров, Stop — остановка, Status — состояние, Market — сводка по рынку, Баланс — остаток на счёте.';
 
 bot.command('start', async (ctx) => {
   subscribers.add(ctx.chat.id);
@@ -181,8 +193,27 @@ bot.command('market', async (ctx) => {
   }
 });
 
-// Любое сообщение — подсказка по кнопкам
+// Кнопка «Баланс» — остаток на счёте
 bot.on('message:text', async (ctx) => {
+  const text = ctx.message.text?.trim();
+  if (text === 'Баланс') {
+    const token = process.env.TINKOFF_TOKEN;
+    if (!token) {
+      await ctx.reply('Остаток: не задан TINKOFF_TOKEN.', { reply_markup: mainKeyboard });
+      return;
+    }
+    const balance = await getAccountBalance(token);
+    if (!balance) {
+      await ctx.reply('Не удалось получить остаток по счёту.', { reply_markup: mainKeyboard });
+      return;
+    }
+    const label = balance.isSandbox ? ' (тестовый счёт)' : '';
+    await ctx.reply(
+      `Остаток на счёте${label}: ${balance.rub.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽`,
+      { reply_markup: mainKeyboard }
+    );
+    return;
+  }
   await ctx.reply('Используйте кнопки ниже.', { reply_markup: mainKeyboard });
 });
 
