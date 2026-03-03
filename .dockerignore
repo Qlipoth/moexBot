@@ -1,0 +1,28 @@
+# Зависимости (в образе ставим через pnpm install)
+node_modules/
+
+# Git и артефакты
+.git
+.gitignore
+*.log
+commit_msg.txt
+
+# Секреты (не должны попадать в образ)
+.env
+.env.*
+!.env.example
+
+# Сборка и кэш
+dist/
+build/
+cache/
+
+# IDE и ОС
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+
+# Документация
+README.md
+LICENSE
