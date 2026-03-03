@@ -25,10 +25,13 @@ const MIN_BAND_DISTANCE = 0.005;
 const BAND_SLIPPAGE_TOLERANCE = 0.002;
 /** Порог NARROW CHANNEL по тикеру (p10 по истории 1h за 30 дней). Обновить: pnpm run calibrate */
 const MIN_BOLLINGER_WIDTH_BY_TICKER: Record<string, number> = {
+  CNYRUBF: 0.00453,
+  USDRUBF: 0.00465,
+  EURRUBF: 0.00598,
+  RGBIF: 0.00198,
   GLDRUBF: 0.01135,
-  IMOEXF: 0.00446,
-  USDRUBF: 0.00473,
-  SBERF: 0.00398,
+  IMOEXF: 0.00447,
+  SBERF: 0.00406,
   GAZPF: 0.00641,
 };
 const DEFAULT_MIN_BOLLINGER_WIDTH_PCT = 0.005;

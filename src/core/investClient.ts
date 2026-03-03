@@ -8,6 +8,10 @@ import {
   InstrumentIdType,
   LastPriceType,
   CandleInterval,
+  OrderDirection,
+  OrderType,
+  TimeInForceType,
+  PriceType,
   type Quotation,
 } from '@tinkoff/invest-js';
 
@@ -42,7 +46,16 @@ export interface HistoricalCandleInput {
 
 function quotationToNumber(q: Quotation | undefined): number {
   if (!q) return 0;
-  return q.units + q.nano / 1e9;
+  const u = typeof q.units === 'bigint' ? Number(q.units) : q.units;
+  const n = typeof q.nano === 'bigint' ? Number(q.nano) : q.nano;
+  return u + n / 1e9;
+}
+
+/** Цена в пунктах (фьючерсы) → Quotation для API. */
+export function numberToQuotation(price: number): Quotation {
+  const units = Math.floor(price);
+  const nano = Math.round((price - units) * 1e9);
+  return { units, nano };
 }
 
 export interface FuturePrice {
@@ -160,6 +173,40 @@ export async function getFutureUid(
   }
 }
 
+export interface FutureInstrumentInfo {
+  uid: string;
+  lot: number;
+  minPriceIncrement: number;
+  minPriceIncrementAmount: number;
+}
+
+/** Данные фьючерса для расчёта размера позиции и заявок. */
+export async function getFutureInstrument(
+  token: string,
+  ticker: string
+): Promise<FutureInstrumentInfo | null> {
+  const client = getInvestClient(token);
+  try {
+    const { instrument } = await client.instruments.futureBy({
+      idType: InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
+      id: ticker,
+      classCode: FUTURES_CLASS_CODE,
+    });
+    if (!instrument?.uid) return null;
+    const minPriceIncrement = quotationToNumber(instrument.minPriceIncrement);
+    const minPriceIncrementAmount = quotationToNumber(instrument.minPriceIncrementAmount);
+    return {
+      uid: instrument.uid,
+      lot: instrument.lot ?? 1,
+      minPriceIncrement,
+      minPriceIncrementAmount,
+    };
+  } catch (e) {
+    console.error(`getFutureInstrument ${ticker}:`, e);
+    return null;
+  }
+}
+
 const CANDLE_LIMIT = 2400;
 
 /**
@@ -242,6 +289,35 @@ export async function ensureSandboxAccount(token: string): Promise<string | null
 }
 
 /**
+ * Сброс песочницы: закрыть все существующие счета, создать новый с начальным депозитом.
+ * Возвращает новый accountId или null.
+ */
+export async function resetSandboxAccount(token: string): Promise<string | null> {
+  if (!isSandbox()) return null;
+  const client = getInvestClient(token);
+  try {
+    const { accounts } = await client.sandbox.getSandboxAccounts({});
+    for (const acc of accounts ?? []) {
+      if (acc.id) {
+        await client.sandbox.closeSandboxAccount({ accountId: acc.id });
+        console.log(`[SANDBOX] Закрыт счёт ${acc.id}`);
+      }
+    }
+    const { accountId } = await client.sandbox.openSandboxAccount({});
+    if (!accountId) return null;
+    await client.sandbox.sandboxPayIn({
+      accountId,
+      amount: { currency: 'RUB', units: SANDBOX_INITIAL_DEPOSIT_RUB, nano: 0 },
+    });
+    console.log(`[SANDBOX] Новый счёт ${accountId}, зачислено ${SANDBOX_INITIAL_DEPOSIT_RUB} ₽`);
+    return accountId;
+  } catch (e) {
+    console.error('[SANDBOX] resetSandboxAccount:', e);
+    return null;
+  }
+}
+
+/**
  * Возвращает доступный остаток по счёту (рубли).
  * В песочнице использует счёт, созданный ensureSandboxAccount; в боевом — первый счёт пользователя.
  */
@@ -251,20 +327,25 @@ export async function getAccountBalance(token: string): Promise<AccountBalanceRe
     if (isSandbox()) {
       const accountId = await ensureSandboxAccount(token);
       if (!accountId) return null;
-      let rub = 0;
-      const limits = await client.sandbox.getSandboxWithdrawLimits({ accountId });
-      for (const m of limits.money ?? []) {
-        if (m.currency === 'RUB') rub += moneyValueToNumber(m);
-      }
-      if (rub === 0) {
-        const portfolio = await client.sandbox.getSandboxPortfolio({ accountId });
-        if (portfolio.totalAmountCurrencies && portfolio.totalAmountCurrencies.currency === 'RUB') {
-          rub = moneyValueToNumber(portfolio.totalAmountCurrencies);
-        }
-        if (rub === 0 && portfolio.totalAmountPortfolio) {
-          rub = moneyValueToNumber(portfolio.totalAmountPortfolio);
-        }
-      }
+      const portfolio = await client.sandbox.getSandboxPortfolio({ accountId });
+
+      const totalPortfolio = portfolio.totalAmountPortfolio
+        ? moneyValueToNumber(portfolio.totalAmountPortfolio)
+        : 0;
+      const totalCurrencies = portfolio.totalAmountCurrencies
+        ? moneyValueToNumber(portfolio.totalAmountCurrencies)
+        : 0;
+      const totalFutures = portfolio.totalAmountFutures
+        ? moneyValueToNumber(portfolio.totalAmountFutures)
+        : 0;
+
+      // Песочница: totalAmountPortfolio не учитывает фьючерсы, поэтому считаем вручную.
+      // currencies завышен на номинал SHORT, futures < 0 → сумма = реальное эквити.
+      const rub = totalCurrencies + totalFutures;
+      console.log(
+        `[BALANCE] equity=${rub.toFixed(2)} (currencies=${totalCurrencies.toFixed(2)} + futures=${totalFutures.toFixed(2)})`
+      );
+
       return { accountId, rub, isSandbox: true };
     }
     const { accounts } = await client.users.getAccounts({});
@@ -279,5 +360,207 @@ export async function getAccountBalance(token: string): Promise<AccountBalanceRe
   } catch (e) {
     console.error('getAccountBalance:', e);
     return null;
+  }
+}
+
+/**
+ * Пополнить счёт в песочнице на указанную сумму (рублей). В боевом режиме — no-op.
+ */
+export async function sandboxTopUp(
+  token: string,
+  accountId: string,
+  amountRub: number
+): Promise<boolean> {
+  if (!isSandbox()) return false;
+  const client = getInvestClient(token);
+  try {
+    await client.sandbox.sandboxPayIn({
+      accountId,
+      amount: { currency: 'RUB', units: amountRub, nano: 0 },
+    });
+    console.log(`[SANDBOX] Пополнено на ${amountRub} ₽ (accountId=${accountId})`);
+    return true;
+  } catch (e) {
+    console.error('[SANDBOX] sandboxTopUp:', e);
+    return false;
+  }
+}
+
+export interface MaxLotsResult {
+  maxLots: number;
+  /** Доступная сумма для покупки (рублей). Нужна для расчёта ГО на 1 лот. */
+  availableMoneyRub: number;
+}
+
+/**
+ * Максимальное количество лотов, которое можно купить/продать по инструменту (с учётом ГО и баланса).
+ * Песочница — getSandboxMaxLots, боевой — orders.getMaxLots.
+ */
+export async function getMaxLots(
+  token: string,
+  accountId: string,
+  instrumentId: string,
+  direction: 'BUY' | 'SELL'
+): Promise<MaxLotsResult> {
+  const client = getInvestClient(token);
+  try {
+    const result = isSandbox()
+      ? await client.sandbox.getSandboxMaxLots({ accountId, instrumentId })
+      : await client.orders.getMaxLots({ accountId, instrumentId });
+    if (direction === 'BUY') {
+      // LONG: buyMarginLimits (с учётом маржи) → buyLimits (на свои)
+      const limits = result.buyMarginLimits ?? result.buyLimits;
+      const maxLots = limits?.buyMaxMarketLots ?? limits?.buyMaxLots ?? 0;
+      const availableMoneyRub = limits?.buyMoneyAmount
+        ? quotationToNumber(limits.buyMoneyAmount)
+        : 0;
+      console.log(`[MAX_LOTS] BUY ${instrumentId}: maxLots=${maxLots}, money=${availableMoneyRub.toFixed(0)}`);
+      return { maxLots, availableMoneyRub };
+    }
+    // SHORT: sellMarginLimits (открытие шорта на маржу) → sellLimits (продажа имеющегося)
+    const marginLots = result.sellMarginLimits?.sellMaxLots ?? 0;
+    const ownLots = result.sellLimits?.sellMaxLots ?? 0;
+    const maxLots = Math.max(marginLots, ownLots);
+    console.log(`[MAX_LOTS] SELL ${instrumentId}: marginLots=${marginLots}, ownLots=${ownLots}, maxLots=${maxLots}`);
+    return { maxLots, availableMoneyRub: 0 };
+  } catch (e) {
+    console.error('getMaxLots:', e);
+    return { maxLots: 0, availableMoneyRub: 0 };
+  }
+}
+
+export interface PostOrderResult {
+  orderId: string;
+  success: boolean;
+  filled: boolean;
+  message?: string;
+}
+
+/**
+ * Выставить заявку (в песочнице — postSandboxOrder, в боевом — postOrder).
+ * instrumentId — uid фьючерса, quantity — лоты, price — в пунктах (для лимита).
+ */
+export async function postOrder(params: {
+  token: string;
+  accountId: string;
+  instrumentId: string;
+  quantity: number;
+  direction: 'BUY' | 'SELL';
+  orderType?: 'MARKET' | 'LIMIT';
+  orderId: string;
+  price?: number;
+}): Promise<PostOrderResult> {
+  const client = getInvestClient(params.token);
+  const direction =
+    params.direction === 'BUY'
+      ? OrderDirection.ORDER_DIRECTION_BUY
+      : OrderDirection.ORDER_DIRECTION_SELL;
+  const orderType =
+    params.orderType === 'LIMIT'
+      ? OrderType.ORDER_TYPE_LIMIT
+      : OrderType.ORDER_TYPE_MARKET;
+  const request: Parameters<typeof client.sandbox.postSandboxOrder>[0] = {
+    accountId: params.accountId,
+    instrumentId: params.instrumentId,
+    quantity: params.quantity,
+    direction,
+    orderType,
+    orderId: params.orderId,
+    timeInForce: TimeInForceType.TIME_IN_FORCE_DAY,
+    priceType: PriceType.PRICE_TYPE_POINT,
+  };
+  if (params.price != null && orderType === OrderType.ORDER_TYPE_LIMIT) {
+    request.price = numberToQuotation(params.price);
+  }
+  try {
+    const result = isSandbox()
+      ? await client.sandbox.postSandboxOrder(request)
+      : await client.orders.postOrder(request);
+    const status = result.executionReportStatus;
+    const filled = status === 1; // EXECUTION_REPORT_STATUS_FILL
+    const success = filled || status === 4; // NEW
+    return {
+      orderId: result.orderId ?? params.orderId,
+      success,
+      filled,
+      message: result.message,
+    };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('postOrder:', e);
+    return { orderId: params.orderId, success: false, filled: false, message };
+  }
+}
+
+/** Тип заявки из API (список активных). */
+export interface OrderInfo {
+  orderId: string;
+  instrumentUid: string;
+  direction: 'BUY' | 'SELL';
+  lotsRequested: number;
+  lotsExecuted: number;
+  initialSecurityPrice: number | null;
+  executionReportStatus: number;
+  orderType: string;
+  orderDate: Date | undefined;
+}
+
+/**
+ * Список активных заявок по счёту (песочница — getSandboxOrders, боевой — getOrders).
+ */
+export async function getOrders(
+  token: string,
+  accountId: string
+): Promise<OrderInfo[]> {
+  const client = getInvestClient(token);
+  try {
+    const response = isSandbox()
+      ? await client.sandbox.getSandboxOrders({ accountId })
+      : await client.orders.getOrders({ accountId });
+    const orders = response.orders ?? [];
+    return orders.map((o) => ({
+      orderId: o.orderId ?? '',
+      instrumentUid: o.instrumentUid ?? '',
+      direction:
+        o.direction === 2 ? 'SELL' : 'BUY', // 1=BUY, 2=SELL
+      lotsRequested: o.lotsRequested ?? 0,
+      lotsExecuted: o.lotsExecuted ?? 0,
+      initialSecurityPrice: o.initialSecurityPrice
+        ? quotationToNumber(o.initialSecurityPrice)
+        : null,
+      executionReportStatus: o.executionReportStatus ?? 0,
+      orderType:
+        o.orderType === 1 ? 'LIMIT' : o.orderType === 2 ? 'MARKET' : 'OTHER',
+      orderDate: o.orderDate,
+    }));
+  } catch (e) {
+    console.error('getOrders:', e);
+    return [];
+  }
+}
+
+/**
+ * Список открытых позиций по фьючерсам (instrument_uid с ненулевым балансом).
+ * Песочница — getSandboxPositions, боевой — operations.getPositions.
+ */
+export async function getFuturesPositions(
+  token: string,
+  accountId: string
+): Promise<{ instrumentUid: string; balance: number }[]> {
+  const client = getInvestClient(token);
+  try {
+    const response = isSandbox()
+      ? await client.sandbox.getSandboxPositions({ accountId })
+      : await client.operations.getPositions({ accountId });
+    const futures = response.futures ?? [];
+    return futures
+      .filter((f) => (f.balance ?? 0) !== 0)
+      .map((f) => ({
+        instrumentUid: f.instrumentUid ?? '',
+        balance: f.balance ?? 0,
+      }));
+  } catch (e) {
+    console.error('getFuturesPositions:', e);
+    return [];
   }
 }

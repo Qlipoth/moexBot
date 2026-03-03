@@ -1,29 +1,43 @@
 /**
  * Мониторинг фьючерсов: загрузка 1h свечей и проверка точек входа (Bollinger), по образцу byBitBot.
+ * При наличии tradeExecutor — открытие позиции по сигналу и проверка стопа/тейка по последней цене.
  */
 
 import { fetchTinkoffCandles } from './candleLoader.js';
 import {
   getLastCandleTimestamp1h,
+  getLastClose1h,
   ingest1hCandles,
 } from './candleBuilder.js';
 import { adaptiveBollingerStrategy } from './adaptiveBollingerStrategy.js';
 import { tradingState } from '../core/tradingState.js';
+import {
+  isOverDailyLossLimit,
+  wasLimitAlertTriggeredToday,
+  markLimitAlertTriggered,
+} from '../core/dailyLossLimit.js';
+import type { TinkoffTradeManager } from './tinkoffTradeManager.js';
 
 const WATCH_INTERVAL_MS = 60_000; // 1 минута
-/** Календарных дней для запроса 1h свечей (торговля не 24/7 — за 30 дней набираем достаточно торговых часов). */
 const CANDLES_REQUEST_DAYS = 30;
-/** Не слать повторный алерт по одному тикеру и той же стороне (LONG/SHORT) в течение этого времени (мс). */
 const ALERT_COOLDOWN_MS = 60 * 60 * 1000; // 1 час
-/** Если последняя свеча старше этого порога — не слать алерт (устаревшие данные, выходные/перерыв торгов). */
 const STALE_CANDLE_MS = 4 * 60 * 60 * 1000; // 4 часа
+const REENTRY_COOLDOWN_MS = 20 * 60 * 1000; // 20 минут после закрытия
+/** Множитель ATR для расчёта стопа (как в byBitBot). */
+const STOP_ATR_MULT = 1.5;
 
 const lastAlertByTicker = new Map<string, { side: 'LONG' | 'SHORT'; at: number }>();
+const lastClosedCandleByTicker = new Map<string, number>();
+const reentryCooldownUntilByTicker = new Map<string, number>();
 
 export interface WatcherOptions {
   token: string;
   onAlert: (message: string) => void | Promise<void>;
   intervalMs?: number;
+  /** Если задан — при подтверждённом сигнале выставляется заявка (и проверяется стоп/тейк). */
+  tradeExecutor?: TinkoffTradeManager;
+  /** Функция для получения баланса в рублях (для расчёта размера позиции). */
+  balanceProvider?: () => Promise<number>;
 }
 
 /**
@@ -34,12 +48,13 @@ export function startMarketWatcher(
   ticker: string,
   options: WatcherOptions
 ): () => void {
-  const { token, onAlert, intervalMs = WATCH_INTERVAL_MS } = options;
+  const { token, onAlert, intervalMs = WATCH_INTERVAL_MS, tradeExecutor, balanceProvider } = options;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
   const tick = async (): Promise<boolean> => {
     try {
       if (!tradingState.isEnabled()) return true;
+      const now = Date.now();
 
       const end = Math.floor(Date.now() / 3600000) * 3600000;
       const start = end - CANDLES_REQUEST_DAYS * 24 * 3600 * 1000;
@@ -55,6 +70,43 @@ export function startMarketWatcher(
 
       ingest1hCandles(ticker, candles1h);
       console.log(`[WATCHER] ${ticker}: обработано ${candles1h.length} свечей 1h`);
+
+      // Проверка стопа/тейка по открытой позиции (песочница — стоп/тейк в памяти)
+      if (tradeExecutor?.hasPosition(ticker)) {
+        const currentPrice = getLastClose1h(ticker);
+        if (currentPrice != null) {
+          const trigger = tradeExecutor.checkStopTake(ticker, currentPrice);
+          if (trigger === 'STOP' || trigger === 'TAKE') {
+            const reason = trigger === 'STOP' ? 'стоп-лосс' : 'тейк-профит';
+            const { closed, pnlRub } = await tradeExecutor.closePosition(
+              token,
+              ticker,
+              currentPrice,
+              reason
+            );
+            if (closed) {
+              const closedCandleTs =
+                getLastCandleTimestamp1h(ticker) ?? Math.floor(now / 3600000) * 3600000;
+              lastClosedCandleByTicker.set(ticker, closedCandleTs);
+              reentryCooldownUntilByTicker.set(ticker, now + REENTRY_COOLDOWN_MS);
+              await Promise.resolve(
+                onAlert(
+                  `📤 *${ticker}: ЗАКРЫТИЕ* (${reason})\nЦена: ${currentPrice}\nPnL ≈ ${pnlRub.toFixed(2)} ₽`
+                )
+              );
+              if (isOverDailyLossLimit() && !wasLimitAlertTriggeredToday()) {
+                markLimitAlertTriggered();
+                await Promise.resolve(
+                  onAlert(
+                    `⚠️ Дневной лимит убытка достигнут. Новые сделки отключены до следующего дня (UTC) или до повторного /start.`
+                  )
+                );
+              }
+            }
+            return true;
+          }
+        }
+      }
 
       if (!adaptiveBollingerStrategy.isSupported(ticker)) return true;
 
@@ -74,11 +126,22 @@ export function startMarketWatcher(
       if (!confirmed) return true;
 
       const lastCandleTime = getLastCandleTimestamp1h(ticker);
-      const now = Date.now();
       if (
         lastCandleTime === null ||
         now - lastCandleTime > STALE_CANDLE_MS
       ) {
+        return true;
+      }
+
+      const lastClosedCandle = lastClosedCandleByTicker.get(ticker);
+      if (lastClosedCandle != null && lastCandleTime <= lastClosedCandle) {
+        console.log(`[WATCHER] ${ticker}: ждём новую 1h свечу после закрытия`);
+        return true;
+      }
+      const cooldownUntil = reentryCooldownUntilByTicker.get(ticker) ?? 0;
+      if (now < cooldownUntil) {
+        const leftMin = Math.ceil((cooldownUntil - now) / 60000);
+        console.log(`[WATCHER] ${ticker}: re-entry cooldown (${leftMin} мин.)`);
         return true;
       }
 
@@ -91,21 +154,63 @@ export function startMarketWatcher(
       ) {
         return true;
       }
+
+      const entryPrice = getLastClose1h(ticker) ?? 0;
+      if (entryPrice <= 0) return true;
+
+      // Выставление заявки при включённой торговле и наличии исполнителя
+      if (!tradeExecutor || !balanceProvider) {
+        console.log(`[WATCHER] ${ticker}: нет tradeExecutor/balanceProvider, только алерт`);
+      } else if (!tradingState.allowNewEntries()) {
+        console.log(`[WATCHER] ${ticker}: торговля выключена или close-only`);
+      } else if (isOverDailyLossLimit()) {
+        console.log(`[WATCHER] ${ticker}: дневной лимит убытка достигнут`);
+      } else if (tradeExecutor.hasPosition(ticker)) {
+        console.log(`[WATCHER] ${ticker}: уже есть позиция в памяти бота`);
+      } else {
+        const balanceRub = await balanceProvider();
+        if (balanceRub <= 0) {
+          console.log(`[WATCHER] ${ticker}: баланс ${balanceRub} ₽, нельзя открыть`);
+        } else {
+          const ctx = adaptiveBollingerStrategy.getContext(ticker);
+          let stopPrice: number | null = null;
+          if (ctx && Number.isFinite(ctx.atr) && ctx.atr > 0) {
+            stopPrice =
+              signalSide === 'LONG'
+                ? entryPrice - ctx.atr * STOP_ATR_MULT
+                : entryPrice + ctx.atr * STOP_ATR_MULT;
+          }
+          if (stopPrice == null || stopPrice <= 0) {
+            console.log(`[WATCHER] ${ticker}: не удалось рассчитать стоп (ATR=${ctx?.atr})`);
+          } else {
+            const opened = await tradeExecutor.openPosition({
+              token,
+              ticker,
+              side: signalSide,
+              price: entryPrice,
+              stopPrice,
+              balanceRub,
+            });
+            if (opened) {
+              lastAlertByTicker.set(ticker, { side: signalSide, at: now });
+              const sideStr = signalSide === 'LONG' ? 'LONG 🟢' : 'SHORT 🔴';
+              await Promise.resolve(
+                onAlert(
+                  `✅ *${ticker}: ВХОД В СДЕЛКУ*\n` +
+                    `Сигнал: ${sideStr}\n` +
+                    `Цена: ${entryPrice}\n` +
+                    `Score: L:${adaptive.longScore} S:${adaptive.shortScore}\n` +
+                    `(Bollinger 1h)`
+                )
+              );
+              return true;
+            }
+            console.log(`[WATCHER] ${ticker}: openPosition вернул false (см. [TRADE] логи выше)`);
+          }
+        }
+      }
+
       lastAlertByTicker.set(ticker, { side: signalSide, at: now });
-
-      const side =
-        adaptive.signal === 'LONG'
-          ? 'LONG 🟢'
-          : adaptive.signal === 'SHORT'
-            ? 'SHORT 🔴'
-            : '—';
-      const msg =
-        `✅ *${ticker}: ТОЧКА ВХОДА*\n` +
-        `Сигнал: ${side}\n` +
-        `Score: L:${adaptive.longScore} S:${adaptive.shortScore}\n` +
-        `(Bollinger 1h)`;
-
-      await Promise.resolve(onAlert(msg));
       return true;
     } catch (err) {
       console.error(`[WATCHER] ${ticker} error:`, err);

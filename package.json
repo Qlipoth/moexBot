@@ -11,7 +11,8 @@
     "format:check": "prettier --check .",
     "preview": "node dist/bot.js",
     "start": "tsx src/index.ts",
-    "calibrate": "tsx scripts/calibrateBollinger.ts"
+    "calibrate": "tsx scripts/calibrateBollinger.ts",
+    "sandbox:reset": "tsx scripts/resetSandbox.ts"
   },
   "keywords": [
     "moex",

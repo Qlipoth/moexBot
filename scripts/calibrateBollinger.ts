@@ -13,7 +13,7 @@ import type { HistoricalCandleInput } from '../src/core/investClient.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: join(__dirname, '..', '.env') });
 
-const TICKERS = ['GLDRUBF', 'IMOEXF', 'USDRUBF', 'SBERF', 'GAZPF'];
+const TICKERS = ['CNYRUBF', 'USDRUBF', 'EURRUBF', 'RGBIF', 'GLDRUBF', 'IMOEXF', 'SBERF', 'GAZPF'];
 const BB_PERIOD = 20;
 const BB_STD = 2;
 const DAYS_BACK = 30;

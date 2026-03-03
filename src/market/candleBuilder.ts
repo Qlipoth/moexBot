@@ -108,6 +108,15 @@ export function getLastCandleTimestamp1h(ticker: string): number | null {
   return (current.minute + 1) * 3600000;
 }
 
+/** Последняя цена закрытия 1h свечи по тикеру (для проверки стопа/тейка). */
+export function getLastClose1h(ticker: string): number | null {
+  const state = candleState1h[ticker];
+  if (!state) return null;
+  if (state.current) return state.current.close;
+  const last = state.history[state.history.length - 1];
+  return last ? last.close : null;
+}
+
 export function getHistory1h(ticker: string): Candle[] {
   return candleState1h[ticker]?.history ?? [];
 }
