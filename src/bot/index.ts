@@ -201,7 +201,7 @@ async function handleMarket(ctx: any): Promise<void> {
         const prevR = Math.round(p.previousClose * 100) / 100;
         const change = lastR - prevR;
         const changePercent = (change / prevR) * 100;
-        const emoji = change >= 0 ? '📈' : '📉';
+        const emoji = change >= 0 ? '🟢' : '🔴';
         const sign = change >= 0 ? '+' : '−';
         const absChange = Math.abs(change);
         const absPercent = Math.abs(changePercent);
