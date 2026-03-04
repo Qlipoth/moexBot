@@ -363,6 +363,36 @@ export async function getAccountBalance(token: string): Promise<AccountBalanceRe
   }
 }
 
+/** Минимальная сумма пополнения при 30034 (руб.). */
+const SANDBOX_TOPUP_MIN_RUB = 5_000;
+
+/** Буфер поверх нехватающей суммы (руб.). */
+const SANDBOX_TOPUP_BUFFER_RUB = 5_000;
+
+/**
+ * Вычислить сумму пополнения для закрытия позиции при 30034.
+ * Нужно: номинал позиции − доступная маржа + буфер.
+ */
+export async function computeSandboxTopUpAmount(
+  token: string,
+  accountId: string,
+  instrumentId: string,
+  quantity: number,
+  price: number,
+  minPriceIncrement: number,
+  minPriceIncrementAmount: number,
+  direction: 'BUY' | 'SELL'
+): Promise<number> {
+  if (!isSandbox()) return 0;
+  const { availableMoneyRub } = await getMaxLots(token, accountId, instrumentId, direction);
+  const nominalPerLot =
+    minPriceIncrement > 0 ? (price / minPriceIncrement) * minPriceIncrementAmount : 0;
+  const neededRub = nominalPerLot * quantity;
+  const shortage = Math.max(0, neededRub - availableMoneyRub);
+  const amount = Math.ceil((shortage + SANDBOX_TOPUP_BUFFER_RUB) / 1000) * 1000;
+  return Math.max(SANDBOX_TOPUP_MIN_RUB, amount);
+}
+
 /**
  * Пополнить счёт в песочнице на указанную сумму (рублей). В боевом режиме — no-op.
  */

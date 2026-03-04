@@ -15,6 +15,8 @@ import {
   getOrders,
   getFutureInstrument,
   postOrder,
+  sandboxTopUp,
+  computeSandboxTopUpAmount,
 } from '../core/investClient.js';
 import { tradingState } from '../core/tradingState.js';
 import { getTradeStats, recordClosedTrade } from '../core/tradeStats.js';
@@ -350,7 +352,8 @@ bot.on('message:text', async (ctx) => {
       return;
     }
 
-    // Позиции из памяти бота (с стопом/тейком)
+    // Перезагружаем с диска (на случай закрытия через скрипт или другой процесс)
+    tradeExecutor?.reloadFromDisk();
     const botPositions = tradeExecutor?.getAllPositions() ?? [];
 
     // Позиции с биржи (фьючерсы с ненулевым балансом)
@@ -377,7 +380,7 @@ bot.on('message:text', async (ctx) => {
 
     const lines: string[] = [];
 
-    // Позиции бота (подробные: SL, TP, лоты, номинал по текущей цене)
+    // 1. Позиции бота (с диска C:\tmp\moex-positions.jsonl) — SL/TP в памяти
     for (const pos of botPositions) {
       const icon = pos.side === 'LONG' ? '🟢' : '🔴';
       const currentPrice = priceByTicker.get(pos.ticker)?.lastPrice ?? pos.entryPrice;
@@ -386,15 +389,15 @@ bot.on('message:text', async (ctx) => {
         : 0;
       const nominalStr = nominal > 0 ? ` | Номинал: ${fmtRub(nominal)} ₽` : '';
       lines.push(
-        `${icon} ${pos.ticker} ${pos.side} — ${pos.lots} лот.${nominalStr}\n` +
+        `${icon} ${pos.ticker} ${pos.side} — ${pos.lots} лот.${nominalStr} 📁\n` +
           `   Вход: ${pos.entryPrice.toFixed(2)} | SL: ${pos.stopPrice.toFixed(2)} | TP: ${pos.takePrice.toFixed(2)}`
       );
     }
 
-    // Позиции с биржи, которых нет в памяти бота (например, после рестарта)
-    const botTickers = new Set(botPositions.map((p) => p.instrumentId));
+    // 2. Позиции с биржи (API), которых нет в памяти бота (например, после рестарта)
+    const botInstrumentIds = new Set(botPositions.map((p) => p.instrumentId));
     for (const ep of exchangePositions) {
-      if (botTickers.has(ep.instrumentUid)) continue;
+      if (botInstrumentIds.has(ep.instrumentUid)) continue;
       const ticker = uidToTicker[ep.instrumentUid] ?? ep.instrumentUid.slice(0, 8) + '…';
       const side = ep.balance > 0 ? 'LONG 🟢' : 'SHORT 🔴';
       const lots = Math.abs(ep.balance);
@@ -405,15 +408,16 @@ bot.on('message:text', async (ctx) => {
         const nominal = (priceInfo.lastPrice / instr.minPriceIncrement) * instr.minPriceIncrementAmount * lots;
         nominalStr = ` | Номинал: ${fmtRub(nominal)} ₽`;
       }
-      lines.push(`${side} ${ticker} — ${lots} лот.${nominalStr}\n   (биржа, без SL/TP в боте)`);
+      lines.push(`${side} ${ticker} — ${lots} лот.${nominalStr} 🌐\n   (биржа, без SL/TP в боте)`);
     }
 
     const label = balance.isSandbox ? ' (тестовый счёт)' : '';
+    const legend = '\n\n📁 = с диска (SL/TP в боте)\n🌐 = с биржи (без SL/TP)';
     if (lines.length === 0) {
       await ctx.reply(`Открытых позиций нет${label}.`, { reply_markup: mainKeyboard });
     } else {
       await ctx.reply(
-        `Открытые позиции${label}:\n\n${lines.join('\n\n')}`,
+        `Открытые позиции${label}:${legend}\n\n${lines.join('\n\n')}`,
         { reply_markup: mainKeyboard }
       );
     }
@@ -492,7 +496,7 @@ bot.on('callback_query:data', async (ctx) => {
   const pos = ticker && tradeExecutor?.hasPosition(ticker) ? tradeExecutor.getPosition(ticker) : undefined;
 
   const { randomUUID } = await import('node:crypto');
-  const result = await postOrder({
+  let result = await postOrder({
     token,
     accountId: balance.accountId,
     instrumentId: instrumentUid,
@@ -501,6 +505,40 @@ bot.on('callback_query:data', async (ctx) => {
     orderType: 'MARKET',
     orderId: randomUUID(),
   });
+
+  // 30034 = not enough balance (песочница) — пополняем только нехватающую сумму
+  if (!result.success && result.message?.includes('30034')) {
+    const priceInfo = (await getFuturesLastPrices(token, MARKET_FUTURES_TICKERS)).find(
+      (p) => uidToTicker[instrumentUid] === p.ticker
+    );
+    const instr = ticker ? await getFutureInstrument(token, ticker) : null;
+    const price = priceInfo?.lastPrice ?? 0;
+    const amount =
+      instr && price > 0
+        ? await computeSandboxTopUpAmount(
+            token,
+            balance.accountId,
+            instrumentUid,
+            lots,
+            price,
+            instr.minPriceIncrement,
+            instr.minPriceIncrementAmount,
+            direction
+          )
+        : 10_000; // fallback если нет данных
+    const topped = await sandboxTopUp(token, balance.accountId, amount);
+    if (topped) {
+      result = await postOrder({
+        token,
+        accountId: balance.accountId,
+        instrumentId: instrumentUid,
+        quantity: lots,
+        direction,
+        orderType: 'MARKET',
+        orderId: randomUUID(),
+      });
+    }
+  }
 
   if (result.success && tradeExecutor && ticker && pos) {
     const lastPrices = await getFuturesLastPrices(token, MARKET_FUTURES_TICKERS);

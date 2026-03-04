@@ -12,7 +12,9 @@
     "preview": "node dist/bot.js",
     "start": "tsx src/index.ts",
     "calibrate": "tsx scripts/calibrateBollinger.ts",
-    "sandbox:reset": "tsx scripts/resetSandbox.ts"
+    "sandbox:reset": "tsx scripts/resetSandbox.ts",
+    "close-position": "tsx scripts/closePosition.ts",
+    "list-positions": "tsx scripts/listPositions.ts"
   },
   "keywords": [
     "moex",

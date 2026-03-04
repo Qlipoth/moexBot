@@ -13,6 +13,7 @@ import {
   getMaxLots,
   postOrder,
   sandboxTopUp,
+  computeSandboxTopUpAmount,
   SANDBOX_INITIAL_DEPOSIT_RUB,
 } from '../core/investClient.js';
 import { calculatePositionSizing } from './positionSizing.js';
@@ -97,7 +98,8 @@ export class TinkoffTradeManager {
     }
   }
 
-  private loadFromDisk(): void {
+  private loadFromDisk(silent = false): void {
+    this.positions.clear();
     try {
       const raw = readFileSync(POSITIONS_FILE, 'utf-8').trim();
       if (!raw) return;
@@ -105,10 +107,15 @@ export class TinkoffTradeManager {
         const pos: TradePosition = JSON.parse(line);
         this.positions.set(pos.ticker, pos);
       }
-      console.log(`[TRADE] Загружено ${this.positions.size} позиций с диска`);
+      if (!silent) console.log(`[TRADE] Загружено ${this.positions.size} позиций с диска`);
     } catch {
       // Файл не существует или повреждён — начинаем с пустого состояния
     }
+  }
+
+  /** Перезагрузить позиции с диска (после закрытия через скрипт или другой процесс). */
+  reloadFromDisk(): void {
+    this.loadFromDisk(true);
   }
 
   /**
@@ -262,7 +269,7 @@ export class TinkoffTradeManager {
 
     const direction = pos.side === 'LONG' ? 'SELL' : 'BUY';
     const orderId = generateOrderId();
-    const result = await postOrder({
+    let result = await postOrder({
       token,
       accountId: pos.accountId,
       instrumentId: pos.instrumentId,
@@ -271,6 +278,33 @@ export class TinkoffTradeManager {
       orderType: 'MARKET',
       orderId,
     });
+
+    // 30034 = not enough balance (песочница); пополняем только нехватающую сумму
+    if (!result.success && result.message?.includes('30034')) {
+      const amount = await computeSandboxTopUpAmount(
+        token,
+        pos.accountId,
+        pos.instrumentId,
+        pos.lots,
+        exitPrice,
+        pos.minPriceIncrement,
+        pos.minPriceIncrementAmount,
+        direction
+      );
+      console.warn(`[TRADE] ${ticker} 30034 при закрытии, пополняем на ${amount} ₽...`);
+      const topped = await sandboxTopUp(token, pos.accountId, amount);
+      if (topped) {
+        result = await postOrder({
+          token,
+          accountId: pos.accountId,
+          instrumentId: pos.instrumentId,
+          quantity: pos.lots,
+          direction,
+          orderType: 'MARKET',
+          orderId: generateOrderId(),
+        });
+      }
+    }
 
     if (!result.success) {
       console.error(`[TRADE] ${ticker} не удалось закрыть:`, result.message);
