@@ -21,7 +21,8 @@ import { addDailyPnlRub } from '../core/dailyLossLimit.js';
 import { recordClosedTrade } from '../core/tradeStats.js';
 
 const tempDir = process.platform === 'win32' ? 'C:\\tmp' : '/tmp';
-const POSITIONS_FILE = path.join(tempDir, 'moex-positions.jsonl');
+const POSITIONS_FILE =
+  process.env.MOEX_POSITIONS_FILE ?? path.join(tempDir, 'moex-positions.jsonl');
 
 export type Side = 'LONG' | 'SHORT';
 
@@ -101,7 +102,12 @@ export class TinkoffTradeManager {
   private loadFromDisk(silent = false): void {
     this.positions.clear();
     try {
-      const raw = readFileSync(POSITIONS_FILE, 'utf-8').trim();
+      let raw: string;
+      try {
+        raw = readFileSync(POSITIONS_FILE, 'utf-8').trim();
+      } catch {
+        return;
+      }
       if (!raw) return;
       for (const line of raw.split('\n')) {
         const pos: TradePosition = JSON.parse(line);
