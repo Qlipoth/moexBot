@@ -23,8 +23,8 @@ const CANDLES_REQUEST_DAYS = 30;
 const ALERT_COOLDOWN_MS = 60 * 60 * 1000; // 1 час
 const STALE_CANDLE_MS = 4 * 60 * 60 * 1000; // 4 часа
 const REENTRY_COOLDOWN_MS = 20 * 60 * 1000; // 20 минут после закрытия
-/** Множитель ATR для расчёта стопа (как в byBitBot). */
-const STOP_ATR_MULT = 1.5;
+/** Множитель ATR для расчёта стопа (2.0 — шире для MOEX, меньше ложных срабатываний). */
+const STOP_ATR_MULT = 2.0;
 
 const lastAlertByTicker = new Map<string, { side: 'LONG' | 'SHORT'; at: number }>();
 const lastClosedCandleByTicker = new Map<string, number>();

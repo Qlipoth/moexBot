@@ -19,7 +19,6 @@ import {
 import { calculatePositionSizing } from './positionSizing.js';
 import { addDailyPnlRub } from '../core/dailyLossLimit.js';
 import { recordClosedTrade } from '../core/tradeStats.js';
-
 const tempDir = process.platform === 'win32' ? 'C:\\tmp' : '/tmp';
 const POSITIONS_FILE =
   process.env.MOEX_POSITIONS_FILE ?? path.join(tempDir, 'moex-positions.jsonl');

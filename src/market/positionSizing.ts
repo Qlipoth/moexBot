@@ -4,7 +4,7 @@
  */
 
 const RISK_PER_TRADE = 0.005; // 0.5%
-const RR_RATIO = 3;
+const RR_RATIO = 2; // 2:1 — тейк ближе, чаще срабатывает
 const ENTRY_FEE_PCT = 0.0004;
 const EXIT_FEE_PCT = 0.0004;
 const TOTAL_FEE_PCT = ENTRY_FEE_PCT + EXIT_FEE_PCT;
