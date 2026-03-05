@@ -1,12 +1,14 @@
 /**
- * Статистика закрытых сделок. Запись в JSONL (C:\tmp\moex-trades.jsonl).
+ * Статистика закрытых сделок. Запись в JSONL.
+ * Путь: MOEX_TRADES_FILE или C:\tmp\moex-trades.jsonl /tmp/moex-trades.jsonl
  */
 
 import { appendFileSync, readFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 const tempDir = process.platform === 'win32' ? 'C:\\tmp' : '/tmp';
-const TRADES_FILE = path.join(tempDir, 'moex-trades.jsonl');
+const TRADES_FILE =
+  process.env.MOEX_TRADES_FILE ?? path.join(tempDir, 'moex-trades.jsonl');
 
 export interface ClosedTradeRecord {
   ticker: string;
