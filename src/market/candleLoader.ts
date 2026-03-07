@@ -1,5 +1,6 @@
 /**
  * Загрузка свечей Tinkoff Invest API для фьючерсов (по образцу byBitBot candleLoader).
+ * API возвращает макс. 2400 свечей за запрос — для периодов >100 дней (1h) загружаем чанками.
  */
 
 import {
@@ -9,6 +10,9 @@ import {
 } from '../core/investClient.js';
 
 export type { HistoricalCandleInput };
+
+const CANDLES_PER_REQUEST = 2400;
+const MS_PER_1H = 3600_000;
 
 export async function fetchTinkoffCandles(
   token: string,
@@ -25,14 +29,38 @@ export async function fetchTinkoffCandles(
     console.log(`[LOADER] ${ticker}: инструмент не найден (uid пустой)`);
     return [];
   }
-  const candles = await getCandles(token, uid, start, end, interval);
-  if (candles.length === 0) {
+
+  const stepMs = interval === '1h' ? MS_PER_1H * CANDLES_PER_REQUEST : 60_000 * CANDLES_PER_REQUEST;
+  const allCandles: HistoricalCandleInput[] = [];
+  let currentStart = start;
+
+  while (currentStart < end) {
+    const chunkEnd = Math.min(currentStart + stepMs, end);
+    const chunk = await getCandles(token, uid, currentStart, chunkEnd, interval);
+    if (chunk.length > 0) {
+      for (const c of chunk) {
+        if (c.timestamp >= start && c.timestamp <= end) {
+          allCandles.push(c);
+        }
+      }
+      const lastTs = chunk[chunk.length - 1]!.timestamp;
+      currentStart = lastTs + (interval === '1h' ? MS_PER_1H : 60_000);
+      if (currentStart >= end) break;
+    } else {
+      break;
+    }
+  }
+
+  const unique = Array.from(
+    new Map(allCandles.map((c) => [c.timestamp, c])).values()
+  ).sort((a, b) => a.timestamp - b.timestamp);
+
+  if (unique.length === 0) {
     console.log(`[LOADER] ${ticker}: получено 0 свечей`);
     return [];
   }
-  const lastTs = candles[candles.length - 1]!.timestamp;
   console.log(
-    `[LOADER] ${ticker}: получено ${candles.length} свечей, последняя дата: ${new Date(lastTs).toISOString()}`
+    `[LOADER] ${ticker}: получено ${unique.length} свечей, последняя дата: ${new Date(unique[unique.length - 1]!.timestamp).toISOString()}`
   );
-  return candles;
+  return unique;
 }

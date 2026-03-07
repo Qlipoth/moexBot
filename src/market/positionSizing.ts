@@ -28,7 +28,8 @@ export function calculatePositionSizing(
   stopPrice: number,
   side: 'LONG' | 'SHORT',
   minPriceIncrement: number,
-  minPriceIncrementAmount: number
+  minPriceIncrementAmount: number,
+  silent = false
 ): PositionSizingResult | null {
   if (balanceRub <= 0 || entryPrice <= 0 || minPriceIncrement <= 0 || minPriceIncrementAmount <= 0) {
     return null;
@@ -56,14 +57,18 @@ export function calculatePositionSizing(
 
   const lots = Math.floor(riskRub / lossPerLotRub);
   if (lots < MIN_LOTS) {
-    console.warn(
-      `[SIZING] Недостаточно для 1 лота: riskRub=${riskRub.toFixed(2)}, lossPerLot=${lossPerLotRub.toFixed(2)}, lots=${lots}`
-    );
+    if (!silent) {
+      console.warn(
+        `[SIZING] Недостаточно для 1 лота: riskRub=${riskRub.toFixed(2)}, lossPerLot=${lossPerLotRub.toFixed(2)}, lots=${lots}`
+      );
+    }
     return null;
   }
-  console.log(
-    `[SIZING] balance=${balanceRub.toFixed(0)} riskRub=${riskRub.toFixed(2)} lossPerLot=${lossPerLotRub.toFixed(2)} lots=${lots} stopPct=${(stopPct * 100).toFixed(2)}%`
-  );
+  if (!silent) {
+    console.log(
+      `[SIZING] balance=${balanceRub.toFixed(0)} riskRub=${riskRub.toFixed(2)} lossPerLot=${lossPerLotRub.toFixed(2)} lots=${lots} stopPct=${(stopPct * 100).toFixed(2)}%`
+    );
+  }
 
   const takePct = stopPct * RR_RATIO + TOTAL_FEE_PCT;
   const takePrice =

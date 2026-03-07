@@ -12,6 +12,8 @@
     "preview": "node dist/bot.js",
     "start": "tsx src/index.ts",
     "calibrate": "tsx scripts/calibrateBollinger.ts",
+    "backtest": "tsx scripts/runBacktest.ts",
+    "backtest:all": "tsx scripts/runBacktestAll.ts",
     "sandbox:reset": "tsx scripts/resetSandbox.ts",
     "close-position": "tsx scripts/closePosition.ts",
     "list-positions": "tsx scripts/listPositions.ts"

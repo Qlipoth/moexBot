@@ -97,6 +97,37 @@ export function ingest1hCandles(
       : 0;
 }
 
+/**
+ * Добавляет одну историческую свечу в состояние 1h (для бэктеста).
+ * Вызывается по одной свече в цикле бэктеста.
+ */
+export function ingestHistoricalCandle(
+  ticker: string,
+  candle: HistoricalCandleInput
+): void {
+  initSymbol1h(ticker);
+  const state = candleState1h[ticker]!;
+  if (state.current) {
+    state.history.push(state.current);
+    if (state.history.length >= HISTORY_LIMIT_1H) state.history.shift();
+  }
+  state.current = {
+    minute: Math.floor(candle.timestamp / 3600000),
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+    volume: candle.volume,
+  };
+  const all1h = [...state.history, state.current];
+  state.atr = all1h.length >= 15 ? calculateATRFromCandles(all1h, 14) : 0;
+  const lastVols = state.history.slice(-14).map((h) => h.volume);
+  state.avgVolume =
+    lastVols.length > 0
+      ? lastVols.reduce((a, b) => a + b, 0) / lastVols.length
+      : 0;
+}
+
 export function getCandle1h(ticker: string): Candle | null {
   return candleState1h[ticker]?.current ?? null;
 }

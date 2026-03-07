@@ -6,7 +6,7 @@ import 'dotenv/config';
 import { getAccountBalance, getFuturesPositions, getFutureInstrument } from '../src/core/investClient.js';
 
 const MARKET_FUTURES_TICKERS = [
-  'CNYRUBF', 'USDRUBF', 'EURRUBF', 'RGBIF', 'GLDRUBF', 'IMOEXF', 'SBERF', 'GAZPF',
+  'USDRUBF', 'GLDRUBF', 'IMOEXF', 'SBERF', 'GAZPF',
 ];
 
 async function main(): Promise<void> {
