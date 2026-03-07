@@ -21,7 +21,6 @@ config({ path: join(__dirname, '..', '.env') });
 const ALL_TICKERS = [
   'CNYRUBF',
   'USDRUBF',
-  'EURRUBF',
   'RGBIF',
   'GLDRUBF',
   'IMOEXF',

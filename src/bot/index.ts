@@ -25,9 +25,11 @@ import { TinkoffTradeManager } from '../market/tinkoffTradeManager.js';
 
 dayjs.locale('ru');
 
-/** Тикеры фьючерсов для команды /market и watcher (CNYRUBF, EURRUBF, RGBIF исключены) */
+/** Тикеры фьючерсов для команды /market и watcher (EURRUBF исключён) */
 const MARKET_FUTURES_TICKERS = [
+  'CNYRUBF',
   'USDRUBF',
+  'RGBIF',
   'GLDRUBF',
   'IMOEXF',
   'SBERF',
@@ -36,7 +38,9 @@ const MARKET_FUTURES_TICKERS = [
 
 /** Иконки для тикеров */
 const TICKER_ICONS: Record<string, string> = {
+  CNYRUBF: '🇨🇳',
   USDRUBF: '💵',
+  RGBIF: '📜',
   GLDRUBF: '🪙',
   IMOEXF: '📊',
   SBERF: '🏦',
