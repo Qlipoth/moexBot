@@ -380,21 +380,28 @@ bot.on('message:text', async (ctx) => {
 
     const lines: string[] = [];
 
-    // 1. Позиции бота (с диска C:\tmp\moex-positions.jsonl) — SL/TP в памяти
+    // 1. Позиции бота (с диска) — SL/TP в памяти
     for (const pos of botPositions) {
-      const icon = pos.side === 'LONG' ? '🟢' : '🔴';
+      const sideIcon = pos.side === 'LONG' ? '🟢' : '🔴';
       const currentPrice = priceByTicker.get(pos.ticker)?.lastPrice ?? pos.entryPrice;
       const nominal = pos.minPriceIncrement > 0
         ? (currentPrice / pos.minPriceIncrement) * pos.minPriceIncrementAmount * pos.lots
         : 0;
       const nominalStr = nominal > 0 ? ` | Номинал: ${fmtRub(nominal)} ₽` : '';
+      const pct =
+        pos.entryPrice > 0
+          ? (pos.side === 'LONG'
+              ? (currentPrice - pos.entryPrice) / pos.entryPrice
+              : (pos.entryPrice - currentPrice) / pos.entryPrice) * 100
+          : 0;
+      const pctStr = `${pct >= 0 ? '🟢' : '🔴'} ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
       lines.push(
-        `${icon} ${pos.ticker} ${pos.side} — ${pos.lots} лот.${nominalStr} 📁\n` +
+        `${sideIcon} ${pos.ticker} ${pos.side} — ${pos.lots} лот.${nominalStr} ${pctStr} 📁\n` +
           `   Вход: ${pos.entryPrice.toFixed(2)} | SL: ${pos.stopPrice.toFixed(2)} | TP: ${pos.takePrice.toFixed(2)}`
       );
     }
 
-    // 2. Позиции с биржи (API), которых нет в памяти бота (например, после рестарта)
+    // 2. Позиции с биржи (API), которых нет в памяти бота — без % (нет цены входа)
     const botInstrumentIds = new Set(botPositions.map((p) => p.instrumentId));
     for (const ep of exchangePositions) {
       if (botInstrumentIds.has(ep.instrumentUid)) continue;
