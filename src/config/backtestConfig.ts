@@ -26,7 +26,7 @@ export const BACKTEST_CONFIG = {
   /** Комиссия входа + выхода (0.0004 + 0.0004, как в positionSizing) */
   feeRate: 0.0008,
   /** Только эти тикеры в backtest:all (пусто = все). Прибыльные за год: SBERF, GAZPF */
-  tickersFilter: ['USDRUBF', 'IMOEXF', 'SBERF', 'GAZPF'] as readonly string[],
+  tickersFilter: [] as readonly string[],
   /** Минимальная дата начала (ms) для инструментов. SBERF/GAZPF — вечные фьючерсы с 1 окт 2024 */
   tickerMinStartMs: {
     SBERF: Date.parse('2024-10-01T00:00:00Z'),

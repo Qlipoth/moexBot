@@ -23,6 +23,18 @@ const SIGNAL_THRESHOLD = 50;
 const SCORE_GAP = 15;
 const MIN_BAND_DISTANCE = 0.005;
 const BAND_SLIPPAGE_TOLERANCE = 0.002;
+/**
+ * Фильтр тренда: при сильном тренде mean-reversion хуже работает.
+ * По умолчанию включён с порогом 0.006 (0.6%). Можно переопределить через env `TRENDSKIP_EMABIAS`.
+ * Значение 0 выключает фильтр.
+ */
+const DEFAULT_TREND_SKIP_EMA_BIAS = 0.006;
+const TREND_SKIP_EMA_BIAS = (() => {
+  const raw = process.env.TRENDSKIP_EMABIAS;
+  if (raw == null || raw.trim() === '') return DEFAULT_TREND_SKIP_EMA_BIAS;
+  const v = Number(raw);
+  return Number.isFinite(v) ? v : DEFAULT_TREND_SKIP_EMA_BIAS;
+})();
 /** Порог NARROW CHANNEL по тикеру (p10 по истории 1h за 30 дней). Обновить: pnpm run calibrate */
 const MIN_BOLLINGER_WIDTH_BY_TICKER: Record<string, number> = {
   CNYRUBF: 0.00453,
@@ -212,6 +224,10 @@ export const adaptiveBollingerStrategy = {
     const minWidth =
       MIN_BOLLINGER_WIDTH_BY_TICKER[ticker] ?? DEFAULT_MIN_BOLLINGER_WIDTH_PCT;
     if (bandWidthPct < minWidth) return false;
+
+    if (TREND_SKIP_EMA_BIAS > 0 && Math.abs(emaBias) > TREND_SKIP_EMA_BIAS) {
+      return false;
+    }
 
     if (signal === 'LONG') {
       return (
