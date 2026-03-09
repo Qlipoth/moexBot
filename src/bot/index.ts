@@ -110,7 +110,10 @@ async function startWatchersOnce(): Promise<void> {
     }
   }
 
-  tradeExecutor = new TinkoffTradeManager();
+  // Переиспользуем менеджер, если он уже создан (например, по запросу «Открытые позиции» до нажатия «Старт»)
+  if (!tradeExecutor) {
+    tradeExecutor = new TinkoffTradeManager();
+  }
   const balanceProvider = async (): Promise<number> => {
     const b = await getAccountBalance(token);
     return b?.rub ?? 0;
@@ -350,9 +353,12 @@ bot.on('message:text', async (ctx) => {
       return;
     }
 
-    // Перезагружаем с диска (на случай закрытия через скрипт или другой процесс)
-    tradeExecutor?.reloadFromDisk();
-    const botPositions = tradeExecutor?.getAllPositions() ?? [];
+    // Менеджер создаётся при «Старт» или по первому запросу позиций — иначе данные из файла не подтягиваются
+    if (!tradeExecutor) {
+      tradeExecutor = new TinkoffTradeManager();
+    }
+    tradeExecutor.reloadFromDisk();
+    const botPositions = tradeExecutor.getAllPositions();
 
     // Позиции с биржи (фьючерсы с ненулевым балансом)
     const exchangePositions = await getFuturesPositions(token, balance.accountId);
@@ -498,7 +504,8 @@ bot.on('callback_query:data', async (ctx) => {
     if (info) uidToTicker[info.uid] = ticker;
   }
   const ticker = uidToTicker[instrumentUid];
-  const pos = ticker && tradeExecutor?.hasPosition(ticker) ? tradeExecutor.getPosition(ticker) : undefined;
+  if (!tradeExecutor) tradeExecutor = new TinkoffTradeManager();
+  const pos = ticker && tradeExecutor.hasPosition(ticker) ? tradeExecutor.getPosition(ticker) : undefined;
 
   const { randomUUID } = await import('node:crypto');
   let result = await postOrder({

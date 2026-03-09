@@ -20,6 +20,7 @@ import { calculatePositionSizing } from './positionSizing.js';
 import { addDailyPnlRub } from '../core/dailyLossLimit.js';
 import { recordClosedTrade } from '../core/tradeStats.js';
 const tempDir = process.platform === 'win32' ? 'C:\\tmp' : '/tmp';
+/** Путь к файлу позиций. При нескольких репликах укажите общий том (volume), иначе каждый инстанс видит только свой /tmp. */
 const POSITIONS_FILE =
   process.env.MOEX_POSITIONS_FILE ?? path.join(tempDir, 'moex-positions.jsonl');
 
@@ -100,21 +101,25 @@ export class TinkoffTradeManager {
 
   private loadFromDisk(silent = false): void {
     this.positions.clear();
+    let raw: string;
     try {
-      let raw: string;
-      try {
-        raw = readFileSync(POSITIONS_FILE, 'utf-8').trim();
-      } catch {
-        return;
-      }
-      if (!raw) return;
-      for (const line of raw.split('\n')) {
-        const pos: TradePosition = JSON.parse(line);
-        this.positions.set(pos.ticker, pos);
-      }
-      if (!silent) console.log(`[TRADE] Загружено ${this.positions.size} позиций с диска`);
+      raw = readFileSync(POSITIONS_FILE, 'utf-8').trim();
     } catch {
-      // Файл не существует или повреждён — начинаем с пустого состояния
+      return;
+    }
+    if (!raw) return;
+    for (const line of raw.split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      try {
+        const pos: TradePosition = JSON.parse(t);
+        if (pos?.ticker) this.positions.set(pos.ticker, pos);
+      } catch {
+        // Пропускаем повреждённую строку, остальные загружаем
+      }
+    }
+    if (!silent && this.positions.size > 0) {
+      console.log(`[TRADE] Загружено ${this.positions.size} позиций с диска: ${POSITIONS_FILE}`);
     }
   }
 

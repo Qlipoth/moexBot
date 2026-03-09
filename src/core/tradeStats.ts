@@ -1,14 +1,18 @@
 /**
  * Статистика закрытых сделок. Запись в JSONL.
  * Путь: MOEX_TRADES_FILE или C:\tmp\moex-trades.jsonl /tmp/moex-trades.jsonl
+ * Как в byBitBot: файл обрезается до последних N строк, чтобы не забивать диск и память при чтении.
  */
 
-import { appendFileSync, readFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 const tempDir = process.platform === 'win32' ? 'C:\\tmp' : '/tmp';
 const TRADES_FILE =
   process.env.MOEX_TRADES_FILE ?? path.join(tempDir, 'moex-trades.jsonl');
+
+/** Макс. строк в файле сделок; при превышении оставляем только последние (как лимит истории в byBitBot). */
+const MAX_TRADE_LINES = 10_000;
 
 export interface ClosedTradeRecord {
   ticker: string;
@@ -32,6 +36,22 @@ export interface TradeStatsResult {
 }
 
 /**
+ * Обрезать файл до последних MAX_TRADE_LINES строк (чтобы не забивать память при getTradeStats).
+ */
+function trimTradesFileIfNeeded(): void {
+  try {
+    const raw = readFileSync(TRADES_FILE, 'utf-8').trim();
+    if (!raw) return;
+    const lines = raw.split('\n').filter((l) => l.trim());
+    if (lines.length <= MAX_TRADE_LINES) return;
+    const keep = lines.slice(-MAX_TRADE_LINES);
+    writeFileSync(TRADES_FILE, keep.join('\n') + '\n', 'utf-8');
+  } catch {
+    // Файл не существует или пуст
+  }
+}
+
+/**
  * Записать закрытую сделку в файл.
  */
 export function recordClosedTrade(record: ClosedTradeRecord): void {
@@ -39,6 +59,7 @@ export function recordClosedTrade(record: ClosedTradeRecord): void {
     mkdirSync(path.dirname(TRADES_FILE), { recursive: true });
     const line = JSON.stringify(record) + '\n';
     appendFileSync(TRADES_FILE, line, 'utf-8');
+    trimTradesFileIfNeeded();
   } catch (e) {
     console.error('[TRADE_STATS] Ошибка записи:', e);
   }

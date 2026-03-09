@@ -237,12 +237,28 @@ export function startMarketWatcher(
 }
 
 /**
+ * Удалить из Maps состояние по тикерам, которых нет в списке (как в byBitBot — не забивать память).
+ */
+function clearStaleTickerState(activeTickers: Set<string>): void {
+  for (const key of lastAlertByTicker.keys()) {
+    if (!activeTickers.has(key)) lastAlertByTicker.delete(key);
+  }
+  for (const key of lastClosedCandleByTicker.keys()) {
+    if (!activeTickers.has(key)) lastClosedCandleByTicker.delete(key);
+  }
+  for (const key of reentryCooldownUntilByTicker.keys()) {
+    if (!activeTickers.has(key)) reentryCooldownUntilByTicker.delete(key);
+  }
+}
+
+/**
  * Запускает вотчеры по всем тикерам, возвращает функцию остановки.
  */
 export function startAllWatchers(
   tickers: string[],
   options: WatcherOptions
 ): () => void {
+  clearStaleTickerState(new Set(tickers));
   const stopFns: Array<() => void> = [];
   for (const ticker of tickers) {
     stopFns.push(startMarketWatcher(ticker, options));
