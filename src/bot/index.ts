@@ -241,8 +241,8 @@ function getNotificationChatIds(): number[] {
   );
 }
 
-async function notifyDisableEvent(event: DisableEvent): Promise<void> {
-  const chatIds = getNotificationChatIds();
+async function notifyDisableEvent(event: DisableEvent, extraChatIds: number[] = []): Promise<void> {
+  const chatIds = Array.from(new Set<number>([...getNotificationChatIds(), ...extraChatIds]));
   if (chatIds.length === 0) {
     console.warn('[BOT] Нет chatId для уведомления об отключении');
     return;
@@ -267,7 +267,8 @@ function stopWatchersIfRunning(): void {
 async function recordDisableEvent(
   reason: BotDisableReason,
   details: string,
-  graceful: boolean
+  graceful: boolean,
+  extraChatIds: number[] = []
 ): Promise<DisableEvent> {
   tradingState.disable();
   const event: DisableEvent = {
@@ -284,7 +285,7 @@ async function recordDisableEvent(
     closeOnlyMode: false,
     lastDisableEvent: event,
   });
-  await notifyDisableEvent(event);
+  await notifyDisableEvent(event, extraChatIds);
   return event;
 }
 
@@ -384,7 +385,7 @@ async function handleStop(ctx: any): Promise<void> {
   subscribers.delete(ctx.chat.id);
   persistRuntimeState();
   stopWatchersIfRunning();
-  await recordDisableEvent('manual_stop', `Команда Стоп от chat ${ctx.chat.id}`, true);
+  await recordDisableEvent('manual_stop', `Команда Стоп от chat ${ctx.chat.id}`, true, [ctx.chat.id]);
   console.log(`Stopped by chat ${ctx.chat.id}`);
   await ctx.reply('Бот остановлен.\n• Торговля выключена\n• Вотчеры остановлены', {
     reply_markup: mainKeyboard,
