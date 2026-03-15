@@ -3,7 +3,10 @@
  */
 
 import 'dotenv/config';
+import { randomUUID } from 'node:crypto';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as http from 'node:http';
+import path from 'node:path';
 import { Bot, InlineKeyboard, Keyboard } from 'grammy';
 import dayjs from 'dayjs';
 import 'dayjs/locale/ru.js';
@@ -55,6 +58,125 @@ if (missingVars.length) {
 }
 
 const bot = new Bot(process.env.BOT_TOKEN!);
+const tempDir = process.platform === 'win32' ? 'C:\\tmp' : '/tmp';
+const BOT_RUNTIME_FILE =
+  process.env.MOEX_RUNTIME_FILE ?? path.join(tempDir, 'moex-bot-runtime.json');
+const BOT_DISABLE_LOG_FILE =
+  process.env.MOEX_DISABLE_LOG_FILE ?? path.join(tempDir, 'moex-bot-disable-events.jsonl');
+const sessionId = randomUUID();
+
+type BotDisableReason =
+  | 'manual_stop'
+  | 'signal'
+  | 'uncaught_exception'
+  | 'unhandled_rejection'
+  | 'unexpected_restart_detected';
+
+interface DisableEvent {
+  at: number;
+  reason: BotDisableReason;
+  graceful: boolean;
+  details?: string;
+  sessionId: string;
+}
+
+interface RuntimeState {
+  subscribers: number[];
+  sessionActive: boolean;
+  tradingEnabled: boolean;
+  closeOnlyMode: boolean;
+  lastSessionId?: string;
+  lastStartedAt?: number;
+  lastDisableEvent?: DisableEvent;
+}
+
+function getDefaultRuntimeState(): RuntimeState {
+  return {
+    subscribers: [],
+    sessionActive: false,
+    tradingEnabled: false,
+    closeOnlyMode: false,
+  };
+}
+
+function ensureParentDir(filePath: string): void {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function readRuntimeState(): RuntimeState {
+  try {
+    const raw = readFileSync(BOT_RUNTIME_FILE, 'utf-8').trim();
+    if (!raw) return getDefaultRuntimeState();
+    const parsed = JSON.parse(raw) as Partial<RuntimeState>;
+    return {
+      ...getDefaultRuntimeState(),
+      ...parsed,
+      subscribers: Array.isArray(parsed.subscribers)
+        ? parsed.subscribers.filter((value): value is number => Number.isInteger(value))
+        : [],
+    };
+  } catch {
+    return getDefaultRuntimeState();
+  }
+}
+
+function writeRuntimeState(state: RuntimeState): void {
+  try {
+    ensureParentDir(BOT_RUNTIME_FILE);
+    writeFileSync(BOT_RUNTIME_FILE, JSON.stringify(state, null, 2), 'utf-8');
+  } catch (error) {
+    console.error('[BOT] Ошибка сохранения runtime-state:', error);
+  }
+}
+
+function parseChatIds(raw: string | undefined): number[] {
+  if (!raw) return [];
+  return raw
+    .split(/[,\s;]+/)
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value));
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.stack ?? `${error.name}: ${error.message}`;
+  }
+  return String(error);
+}
+
+function buildDisableMessage(event: DisableEvent): string {
+  const lines = [
+    '⚠️ <b>Бот выключился</b>',
+    `Время: ${dayjs(event.at).format('DD.MM.YYYY HH:mm:ss')}`,
+    `Причина: <code>${escapeHtml(event.reason)}</code>`,
+  ];
+  if (event.details) {
+    lines.push(`Детали:\n<pre>${escapeHtml(truncateText(event.details, 1500))}</pre>`);
+  }
+  return lines.join('\n');
+}
+
+function appendDisableEvent(event: DisableEvent): void {
+  try {
+    ensureParentDir(BOT_DISABLE_LOG_FILE);
+    appendFileSync(BOT_DISABLE_LOG_FILE, `${JSON.stringify(event)}\n`, 'utf-8');
+  } catch (error) {
+    console.error('[BOT] Ошибка записи disable-лога:', error);
+  }
+  console.error('[BOT DISABLE EVENT]', event);
+}
 
 // Health server (опционально для деплоя)
 const PORT = Number(process.env.PORT) || 8000;
@@ -88,9 +210,112 @@ const mainKeyboard = new Keyboard()
   .text('Статистика')
   .resized();
 
-const subscribers = new Set<number>();
+let runtimeState = readRuntimeState();
+const previousSessionWasActive = runtimeState.sessionActive;
+const previousSessionId = runtimeState.lastSessionId;
+const previousSessionStartedAt = runtimeState.lastStartedAt;
+const alertChatIdsFromEnv = parseChatIds(process.env.BOT_ALERT_CHAT_IDS);
+const subscribers = new Set<number>(runtimeState.subscribers);
 let stopWatchers: (() => void) | null = null;
 let tradeExecutor: TinkoffTradeManager | null = null;
+let shutdownInProgress = false;
+
+function persistRuntimeState(overrides: Partial<RuntimeState> = {}): void {
+  runtimeState = {
+    ...runtimeState,
+    ...overrides,
+    subscribers: overrides.subscribers ?? Array.from(subscribers),
+    tradingEnabled: overrides.tradingEnabled ?? tradingState.isEnabled(),
+    closeOnlyMode: overrides.closeOnlyMode ?? tradingState.isCloseOnlyMode(),
+  };
+  writeRuntimeState(runtimeState);
+}
+
+function getNotificationChatIds(): number[] {
+  return Array.from(
+    new Set<number>([
+      ...runtimeState.subscribers,
+      ...Array.from(subscribers),
+      ...alertChatIdsFromEnv,
+    ])
+  );
+}
+
+async function notifyDisableEvent(event: DisableEvent): Promise<void> {
+  const chatIds = getNotificationChatIds();
+  if (chatIds.length === 0) {
+    console.warn('[BOT] Нет chatId для уведомления об отключении');
+    return;
+  }
+  const message = buildDisableMessage(event);
+  for (const chatId of chatIds) {
+    try {
+      await bot.api.sendMessage(chatId, message, { parse_mode: 'HTML' });
+    } catch (error) {
+      console.error(`[BOT] Не удалось отправить disable-уведомление в ${chatId}:`, error);
+    }
+  }
+}
+
+function stopWatchersIfRunning(): void {
+  if (stopWatchers) {
+    stopWatchers();
+    stopWatchers = null;
+  }
+}
+
+async function recordDisableEvent(
+  reason: BotDisableReason,
+  details: string,
+  graceful: boolean
+): Promise<DisableEvent> {
+  tradingState.disable();
+  const event: DisableEvent = {
+    at: Date.now(),
+    reason,
+    graceful,
+    details,
+    sessionId,
+  };
+  appendDisableEvent(event);
+  persistRuntimeState({
+    sessionActive: false,
+    tradingEnabled: false,
+    closeOnlyMode: false,
+    lastDisableEvent: event,
+  });
+  await notifyDisableEvent(event);
+  return event;
+}
+
+async function notifyUnexpectedPreviousShutdown(): Promise<void> {
+  if (!previousSessionWasActive) return;
+  const previousStart =
+    previousSessionStartedAt != null
+      ? dayjs(previousSessionStartedAt).format('DD.MM.YYYY HH:mm:ss')
+      : 'неизвестно';
+  const event: DisableEvent = {
+    at: Date.now(),
+    reason: 'unexpected_restart_detected',
+    graceful: false,
+    details:
+      `Предыдущая сессия завершилась без штатного shutdown.` +
+      ` Последний старт: ${previousStart}.` +
+      (previousSessionId ? ` sessionId=${previousSessionId}` : ''),
+    sessionId: previousSessionId ?? 'unknown',
+  };
+  appendDisableEvent(event);
+  persistRuntimeState({ lastDisableEvent: event });
+  await notifyDisableEvent(event);
+}
+
+persistRuntimeState({
+  sessionActive: true,
+  tradingEnabled: false,
+  closeOnlyMode: false,
+  lastSessionId: sessionId,
+  lastStartedAt: Date.now(),
+});
 
 async function startWatchersOnce(): Promise<void> {
   if (stopWatchers) {
@@ -145,6 +370,11 @@ const welcomeMsg =
 async function handleStart(ctx: any): Promise<void> {
   subscribers.add(ctx.chat.id);
   tradingState.enable();
+  persistRuntimeState({
+    sessionActive: true,
+    tradingEnabled: true,
+    closeOnlyMode: false,
+  });
   await startWatchersOnce();
   console.log(`Subscribed chat ${ctx.chat.id}`);
   await ctx.reply(welcomeMsg, { reply_markup: mainKeyboard });
@@ -152,11 +382,9 @@ async function handleStart(ctx: any): Promise<void> {
 
 async function handleStop(ctx: any): Promise<void> {
   subscribers.delete(ctx.chat.id);
-  tradingState.disable();
-  if (stopWatchers) {
-    stopWatchers();
-    stopWatchers = null;
-  }
+  persistRuntimeState();
+  stopWatchersIfRunning();
+  await recordDisableEvent('manual_stop', `Команда Стоп от chat ${ctx.chat.id}`, true);
   console.log(`Stopped by chat ${ctx.chat.id}`);
   await ctx.reply('Бот остановлен.\n• Торговля выключена\n• Вотчеры остановлены', {
     reply_markup: mainKeyboard,
@@ -585,23 +813,50 @@ bot.on('callback_query:data', async (ctx) => {
 
 bot.catch((err) => console.error('Bot error:', err));
 
-// Shutdown
-async function shutdown(signal: string): Promise<void> {
-  console.log(`Shutdown (${signal})`);
-  if (stopWatchers) {
-    stopWatchers();
-    stopWatchers = null;
-  }
+async function stopInfrastructure(): Promise<void> {
+  stopWatchersIfRunning();
   healthServer.close();
-  await bot.stop();
-  process.exit(0);
+  try {
+    await bot.stop();
+  } catch (error) {
+    console.error('[BOT] Ошибка при остановке bot.stop():', error);
+  }
 }
-process.on('SIGINT', () => shutdown('SIGINT').catch(console.error));
-process.on('SIGTERM', () => shutdown('SIGTERM').catch(console.error));
+
+async function shutdownWithEvent(
+  exitCode: number,
+  reason: BotDisableReason,
+  details: string,
+  graceful: boolean
+): Promise<void> {
+  if (shutdownInProgress) return;
+  shutdownInProgress = true;
+  try {
+    await recordDisableEvent(reason, details, graceful);
+  } catch (error) {
+    console.error('[BOT] Не удалось зафиксировать disable-событие:', error);
+  }
+  await stopInfrastructure();
+  process.exit(exitCode);
+}
+
+process.on('SIGINT', () => {
+  void shutdownWithEvent(0, 'signal', 'Получен сигнал SIGINT', true);
+});
+process.on('SIGTERM', () => {
+  void shutdownWithEvent(0, 'signal', 'Получен сигнал SIGTERM', true);
+});
+process.on('uncaughtException', (error) => {
+  void shutdownWithEvent(1, 'uncaught_exception', formatUnknownError(error), false);
+});
+process.on('unhandledRejection', (reason) => {
+  void shutdownWithEvent(1, 'unhandled_rejection', formatUnknownError(reason), false);
+});
 
 console.log('Starting bot...');
 bot.start({
-  onStart: (info) => {
+  onStart: async (info) => {
     console.log(`Bot @${info.username} is running`);
+    await notifyUnexpectedPreviousShutdown();
   },
 });
