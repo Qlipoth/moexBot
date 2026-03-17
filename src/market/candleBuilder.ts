@@ -62,30 +62,26 @@ export function calculateATRFromCandles(
   return atr;
 }
 
-/**
- * Синхронизирует 1h свечи для тикера (как в byBitBot). Вызывается из watcher перед getSignal.
- */
-export function ingest1hCandles(
-  ticker: string,
-  candles: HistoricalCandleInput[]
-): void {
-  initSymbol1h(ticker);
-  const state = candleState1h[ticker]!;
+function toCandle(input: HistoricalCandleInput): Candle {
+  return {
+    minute: Math.floor(input.timestamp / 3600000),
+    open: input.open,
+    high: input.high,
+    low: input.low,
+    close: input.close,
+    volume: input.volume,
+  };
+}
+
+function applyCandlesToState(state: SymbolCandleState, candles: Candle[]): void {
   state.history = [];
   state.current = null;
-  for (const c of candles) {
+  for (const candle of candles) {
     if (state.current) {
       state.history.push(state.current);
       if (state.history.length >= HISTORY_LIMIT_1H) state.history.shift();
     }
-    state.current = {
-      minute: Math.floor(c.timestamp / 3600000),
-      open: c.open,
-      high: c.high,
-      low: c.low,
-      close: c.close,
-      volume: c.volume,
-    };
+    state.current = candle;
   }
   const all1h = state.current ? [...state.history, state.current] : state.history;
   state.atr =
@@ -95,6 +91,45 @@ export function ingest1hCandles(
     lastVols.length > 0
       ? lastVols.reduce((a, b) => a + b, 0) / lastVols.length
       : 0;
+}
+
+/**
+ * Синхронизирует 1h свечи для тикера (как в byBitBot). Вызывается из watcher перед getSignal.
+ */
+export function ingest1hCandles(
+  ticker: string,
+  candles: HistoricalCandleInput[]
+): void {
+  initSymbol1h(ticker);
+  const state = candleState1h[ticker]!;
+  applyCandlesToState(state, candles.map(toCandle));
+}
+
+/**
+ * Мягко обновляет 1h состояние: перезаписывает совпавшие свечи и добавляет новые,
+ * не требуя полной перезагрузки всей истории.
+ */
+export function merge1hCandles(
+  ticker: string,
+  candles: HistoricalCandleInput[]
+): void {
+  if (candles.length === 0) return;
+  initSymbol1h(ticker);
+  const state = candleState1h[ticker]!;
+  const merged = new Map<number, Candle>();
+  for (const candle of state.history) {
+    merged.set(candle.minute, candle);
+  }
+  if (state.current) {
+    merged.set(state.current.minute, state.current);
+  }
+  for (const candle of candles) {
+    const next = toCandle(candle);
+    merged.set(next.minute, next);
+  }
+  const sorted = Array.from(merged.values()).sort((a, b) => a.minute - b.minute);
+  const tail = sorted.slice(-(HISTORY_LIMIT_1H + 1));
+  applyCandlesToState(state, tail);
 }
 
 /**
