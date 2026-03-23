@@ -27,8 +27,10 @@ const ALERT_COOLDOWN_MS = 60 * 60 * 1000; // 1 час
 const STALE_CANDLE_MS = 4 * 60 * 60 * 1000; // 4 часа
 const REENTRY_COOLDOWN_MS = 20 * 60 * 1000; // 20 минут после закрытия
 const WATCHER_START_STAGGER_MS = 5_000; // размазываем стартовые загрузки по времени
-/** Множитель ATR для расчёта стопа (2.0 — шире для MOEX, меньше ложных срабатываний). */
-const STOP_ATR_MULT = 2.0;
+/** Множитель ATR для расчёта стопа (2.5 — шире для MOEX, меньше ложных срабатываний; как в backtestConfig). */
+const STOP_ATR_MULT = 2.5;
+/** Допуск при MEAN exit: закрываем позицию, когда цена подходит к middle Bollinger с этим запасом. */
+const MEAN_EXIT_TOLERANCE = 0.0025;
 
 const lastAlertByTicker = new Map<string, { side: 'LONG' | 'SHORT'; at: number }>();
 const lastClosedCandleByTicker = new Map<string, number>();
@@ -99,18 +101,38 @@ export function startMarketWatcher(
         `[WATCHER] ${ticker}: обработано ${candles1h.length} свечей 1h (${needsFullSync ? 'full-sync' : 'incremental'})`
       );
 
-      // Проверка стопа/тейка по открытой позиции (песочница — стоп/тейк в памяти)
+      // Проверка стопа/тейка и MEAN exit по открытой позиции
       if (tradeExecutor?.hasPosition(ticker)) {
         const currentPrice = getLastClose1h(ticker);
         if (currentPrice != null) {
+          let exitReason: string | null = null;
+
           const trigger = tradeExecutor.checkStopTake(ticker, currentPrice);
-          if (trigger === 'STOP' || trigger === 'TAKE') {
-            const reason = trigger === 'STOP' ? 'стоп-лосс' : 'тейк-профит';
+          if (trigger === 'STOP') exitReason = 'стоп-лосс';
+          else if (trigger === 'TAKE') exitReason = 'тейк-профит';
+
+          if (!exitReason) {
+            const pos = tradeExecutor.getPosition(ticker);
+            const ctx = adaptiveBollingerStrategy.getContext(ticker);
+            if (pos && ctx && Number.isFinite(ctx.middle) && ctx.middle > 0) {
+              const reachedMiddle =
+                pos.side === 'LONG'
+                  ? currentPrice >= ctx.middle * (1 - MEAN_EXIT_TOLERANCE)
+                  : currentPrice <= ctx.middle * (1 + MEAN_EXIT_TOLERANCE);
+              const inProfit =
+                pos.side === 'LONG'
+                  ? currentPrice > pos.entryPrice
+                  : currentPrice < pos.entryPrice;
+              if (reachedMiddle && inProfit) exitReason = 'mean-reversion';
+            }
+          }
+
+          if (exitReason) {
             const { closed, pnlRub } = await tradeExecutor.closePosition(
               token,
               ticker,
               currentPrice,
-              reason
+              exitReason
             );
             if (closed) {
               const closedCandleTs =
@@ -119,7 +141,7 @@ export function startMarketWatcher(
               reentryCooldownUntilByTicker.set(ticker, now + REENTRY_COOLDOWN_MS);
               await Promise.resolve(
                 onAlert(
-                  `📤 *${ticker}: ЗАКРЫТИЕ* (${reason})\nЦена: ${currentPrice}\nPnL ≈ ${pnlRub.toFixed(2)} ₽`
+                  `📤 *${ticker}: ЗАКРЫТИЕ* (${exitReason})\nЦена: ${currentPrice}\nPnL ≈ ${pnlRub.toFixed(2)} ₽`
                 )
               );
               if (isOverDailyLossLimit() && !wasLimitAlertTriggeredToday()) {
