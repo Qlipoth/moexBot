@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as http from 'node:http';
 import path from 'node:path';
-import { Bot, InlineKeyboard, Keyboard } from 'grammy';
+import { Bot, InlineKeyboard, InputFile, Keyboard } from 'grammy';
 import dayjs from 'dayjs';
 import 'dayjs/locale/ru.js';
 import {
@@ -24,7 +24,11 @@ import {
 import { tradingState } from '../core/tradingState.js';
 import { getTradeStats, recordClosedTrade } from '../core/tradeStats.js';
 import { startAllWatchers } from '../market/watcher.js';
-import { TinkoffTradeManager } from '../market/tinkoffTradeManager.js';
+import {
+  TinkoffTradeManager,
+  getMoexPositionsFilePath,
+  parseTradePositionsJsonl,
+} from '../market/tinkoffTradeManager.js';
 
 dayjs.locale('ru');
 
@@ -220,6 +224,9 @@ const mainKeyboard = new Keyboard()
   .row()
   .text('Принуд. синхронизация')
   .row()
+  .text('Экспорт файла позиций')
+  .text('Импорт файла позиций')
+  .row()
   .text('Статистика')
   .resized();
 
@@ -232,6 +239,17 @@ const subscribers = new Set<number>(runtimeState.subscribers);
 let stopWatchers: (() => void) | null = null;
 let tradeExecutor: TinkoffTradeManager | null = null;
 let shutdownInProgress = false;
+
+const POSITIONS_FILE_IMPORT_WAIT_MS = 5 * 60_000;
+/** chatId → срок ожидания документа для импорта файла позиций */
+const pendingPositionsFileImportUntil = new Map<number, number>();
+
+function clearStalePendingPositionImports(): void {
+  const now = Date.now();
+  for (const [id, until] of pendingPositionsFileImportUntil) {
+    if (until < now) pendingPositionsFileImportUntil.delete(id);
+  }
+}
 
 function persistRuntimeState(overrides: Partial<RuntimeState> = {}): void {
   runtimeState = {
@@ -393,7 +411,7 @@ async function startWatchersOnce(): Promise<void> {
 
 const welcomeMsg =
   'MOEX Bot\n\n' +
-  'Кнопки: Старт, Стоп, Статус, Рынок, Баланс, Мои заявки, Открытые позиции, Закрыть позицию, Принуд. синхронизация (файл позиций ↔ биржа), Статистика.';
+  'Кнопки: Старт, Стоп, Статус, Рынок, Баланс, Мои заявки, Открытые позиции, Закрыть позицию, Принуд. синхронизация, экспорт/импорт файла позиций (JSONL), Статистика.';
 
 async function handleStart(ctx: any): Promise<void> {
   subscribers.add(ctx.chat.id);
@@ -754,7 +772,114 @@ bot.on('message:text', async (ctx) => {
     return;
   }
 
+  if (text === 'Экспорт файла позиций') {
+    if (!subscribers.has(ctx.chat.id)) {
+      await ctx.reply('Сначала нажмите «Старт».', { reply_markup: mainKeyboard });
+      return;
+    }
+    const filePath = getMoexPositionsFilePath();
+    let buf: Buffer;
+    try {
+      buf = readFileSync(filePath);
+    } catch (e) {
+      const code =
+        e && typeof e === 'object' && 'code' in e ? (e as NodeJS.ErrnoException).code : '';
+      if (code === 'ENOENT') {
+        await ctx.reply(
+          `Файл позиций на сервере ещё не создан:\n\`${filePath}\``,
+          { reply_markup: mainKeyboard, parse_mode: 'Markdown' }
+        );
+        return;
+      }
+      await ctx.reply(
+        `Не удалось прочитать файл: ${e instanceof Error ? e.message : String(e)}`,
+        { reply_markup: mainKeyboard }
+      );
+      return;
+    }
+    await ctx.replyWithDocument(new InputFile(buf, 'moex-positions.jsonl'), {
+      caption: `moex-positions.jsonl\n${filePath}`,
+      reply_markup: mainKeyboard,
+    });
+    return;
+  }
+
+  if (text === 'Импорт файла позиций') {
+    if (!subscribers.has(ctx.chat.id)) {
+      await ctx.reply('Сначала нажмите «Старт».', { reply_markup: mainKeyboard });
+      return;
+    }
+    clearStalePendingPositionImports();
+    pendingPositionsFileImportUntil.set(ctx.chat.id, Date.now() + POSITIONS_FILE_IMPORT_WAIT_MS);
+    await ctx.reply(
+      'Пришлите **документ** с файлом в формате JSONL (как при экспорте): одна строка — один JSON позиции.\n\n' +
+        'Текущий файл позиций на сервере будет **полностью заменён** содержимым файла.\n\n' +
+        'Ожидание файла: 5 минут.',
+      { reply_markup: mainKeyboard, parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
   await ctx.reply('Используйте кнопки ниже.', { reply_markup: mainKeyboard });
+});
+
+bot.on('message:document', async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (chatId == null) return;
+  if (!subscribers.has(chatId)) return;
+
+  clearStalePendingPositionImports();
+  const until = pendingPositionsFileImportUntil.get(chatId);
+  if (until == null || Date.now() > until) return;
+
+  const doc = ctx.message.document;
+  if (!doc) return;
+
+  pendingPositionsFileImportUntil.delete(chatId);
+
+  if (doc.file_size != null && doc.file_size > 1_048_576) {
+    await ctx.reply('Файл слишком большой (максимум 1 МБ).', { reply_markup: mainKeyboard });
+    return;
+  }
+
+  const botToken = process.env.BOT_TOKEN;
+  if (!botToken) {
+    await ctx.reply('BOT_TOKEN не задан.', { reply_markup: mainKeyboard });
+    return;
+  }
+
+  try {
+    const file = await ctx.getFile();
+    const filePath = file.file_path;
+    if (!filePath) {
+      await ctx.reply('Не удалось получить путь к файлу в Telegram.', { reply_markup: mainKeyboard });
+      return;
+    }
+    const url = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      await ctx.reply(`Не удалось скачать файл: HTTP ${res.status}`, { reply_markup: mainKeyboard });
+      return;
+    }
+    const bodyText = await res.text();
+    const parsed = parseTradePositionsJsonl(bodyText);
+    if (!parsed.ok) {
+      await ctx.reply(`Импорт отклонён: ${parsed.error}`, { reply_markup: mainKeyboard });
+      return;
+    }
+    if (!tradeExecutor) tradeExecutor = new TinkoffTradeManager();
+    tradeExecutor.replaceAllPositionsFromImport(parsed.positions);
+    await ctx.reply(
+      `Импорт выполнен. Записей в файле позиций: ${parsed.positions.length}.`,
+      { reply_markup: mainKeyboard }
+    );
+  } catch (e) {
+    console.error('[BOT] Импорт файла позиций:', e);
+    await ctx.reply(
+      `Ошибка импорта: ${e instanceof Error ? e.message : String(e)}`,
+      { reply_markup: mainKeyboard }
+    );
+  }
 });
 
 // Callback: закрытие позиции по inline-кнопке

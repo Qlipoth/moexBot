@@ -24,6 +24,11 @@ const tempDir = process.platform === 'win32' ? 'C:\\tmp' : '/tmp';
 const POSITIONS_FILE =
   process.env.MOEX_POSITIONS_FILE ?? path.join(tempDir, 'moex-positions.jsonl');
 
+/** Абсолютный путь к файлу позиций (для экспорта/бэкапа). */
+export function getMoexPositionsFilePath(): string {
+  return POSITIONS_FILE;
+}
+
 export type Side = 'LONG' | 'SHORT';
 
 export interface TradePosition {
@@ -57,6 +62,100 @@ const openingLocks = new Map<string, number>();
 /** Ключ идемпотентности: API требует формат UUID, макс. 36 символов (ошибка 30028). */
 function generateOrderId(): string {
   return randomUUID();
+}
+
+function validateTradePositionRow(row: unknown): { ok: true; pos: TradePosition } | { ok: false; error: string } {
+  if (row == null || typeof row !== 'object') {
+    return { ok: false, error: 'запись не является объектом' };
+  }
+  const o = row as Record<string, unknown>;
+  const ticker = o.ticker;
+  if (typeof ticker !== 'string' || !ticker.trim()) {
+    return { ok: false, error: 'некорректный ticker' };
+  }
+  const side = o.side;
+  if (side !== 'LONG' && side !== 'SHORT') {
+    return { ok: false, error: 'side должен быть LONG или SHORT' };
+  }
+  const num = (k: string): number | null => {
+    const v = o[k];
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+  };
+  const str = (k: string): string | null => {
+    const v = o[k];
+    return typeof v === 'string' && v.length > 0 ? v : null;
+  };
+  const entryPrice = num('entryPrice');
+  const stopPrice = num('stopPrice');
+  const takePrice = num('takePrice');
+  const lots = num('lots');
+  const minPriceIncrement = num('minPriceIncrement');
+  const minPriceIncrementAmount = num('minPriceIncrementAmount');
+  const openedAt = num('openedAt');
+  if (entryPrice == null || entryPrice <= 0) return { ok: false, error: 'entryPrice' };
+  if (stopPrice == null || stopPrice <= 0) return { ok: false, error: 'stopPrice' };
+  if (takePrice == null || takePrice <= 0) return { ok: false, error: 'takePrice' };
+  if (lots == null || !Number.isInteger(lots) || lots < 1) return { ok: false, error: 'lots' };
+  if (minPriceIncrement == null || minPriceIncrement <= 0) return { ok: false, error: 'minPriceIncrement' };
+  if (minPriceIncrementAmount == null || minPriceIncrementAmount <= 0) {
+    return { ok: false, error: 'minPriceIncrementAmount' };
+  }
+  if (openedAt == null || openedAt <= 0) return { ok: false, error: 'openedAt' };
+  const accountId = str('accountId');
+  const instrumentId = str('instrumentId');
+  if (!accountId) return { ok: false, error: 'accountId' };
+  if (!instrumentId) return { ok: false, error: 'instrumentId' };
+  return {
+    ok: true,
+    pos: {
+      ticker: ticker.trim(),
+      side,
+      entryPrice,
+      stopPrice,
+      takePrice,
+      lots,
+      accountId,
+      instrumentId,
+      minPriceIncrement,
+      minPriceIncrementAmount,
+      openedAt,
+    },
+  };
+}
+
+/**
+ * Разбор JSONL для импорта (Telegram и т.п.). Дубликаты тикера в файле — ошибка.
+ */
+export function parseTradePositionsJsonl(
+  content: string
+): { ok: true; positions: TradePosition[] } | { ok: false; error: string } {
+  const trimmed = content.trim();
+  if (trimmed === '') {
+    return { ok: true, positions: [] };
+  }
+  const lines = trimmed.split(/\r?\n/);
+  const positions: TradePosition[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!.trim();
+    if (!line) continue;
+    let row: unknown;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      return { ok: false, error: `строка ${i + 1}: невалидный JSON` };
+    }
+    const v = validateTradePositionRow(row);
+    if (!v.ok) {
+      return { ok: false, error: `строка ${i + 1}: ${v.error}` };
+    }
+    if (seen.has(v.pos.ticker)) {
+      return { ok: false, error: `дубликат тикера в файле: ${v.pos.ticker}` };
+    }
+    seen.add(v.pos.ticker);
+    positions.push(v.pos);
+  }
+  return { ok: true, positions };
 }
 
 function positionMatchesExchange(
@@ -94,6 +193,21 @@ export class TinkoffTradeManager {
   forceRemovePosition(ticker: string): void {
     this.positions.delete(ticker);
     this.saveToDisk();
+  }
+
+  /**
+   * Полная замена позиций из импорта (после parseTradePositionsJsonl).
+   * Пустой массив — очищает файл.
+   */
+  replaceAllPositionsFromImport(positions: TradePosition[]): void {
+    this.positions.clear();
+    for (const p of positions) {
+      this.positions.set(p.ticker, p);
+    }
+    this.saveToDisk();
+    console.log(
+      `[TRADE] Импорт позиций: ${positions.length} шт. записано в ${POSITIONS_FILE}`
+    );
   }
 
   private saveToDisk(): void {
