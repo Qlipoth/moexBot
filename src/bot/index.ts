@@ -37,7 +37,17 @@ const MARKET_FUTURES_TICKERS = [
   'IMOEXF',
   'SBERF',
   'GAZPF',
-];
+] as const;
+
+/**
+ * Тикеры только для UI: маппинг instrument_uid → тикер и цены (список позиций, закрытие).
+ * Не участвуют в watcher — чтобы можно было закрыть позицию с биржи по тикеру, даже если бот её не торгует.
+ */
+const POSITION_UI_EXTRA_TICKERS = ['EURRUBF'] as const;
+
+function tickersForPositionUi(): readonly string[] {
+  return [...MARKET_FUTURES_TICKERS, ...POSITION_UI_EXTRA_TICKERS];
+}
 
 /** Иконки для тикеров */
 const TICKER_ICONS: Record<string, string> = {
@@ -48,6 +58,7 @@ const TICKER_ICONS: Record<string, string> = {
   IMOEXF: '📊',
   SBERF: '🏦',
   GAZPF: '⛽',
+  EURRUBF: '🇪🇺',
 };
 
 const requiredEnvVars = ['BOT_TOKEN'];
@@ -207,6 +218,8 @@ const mainKeyboard = new Keyboard()
   .text('Открытые позиции')
   .text('Закрыть позицию')
   .row()
+  .text('Принуд. синхронизация')
+  .row()
   .text('Статистика')
   .resized();
 
@@ -289,6 +302,20 @@ async function recordDisableEvent(
   return event;
 }
 
+/** Сверка файла позиций с биржей: убирает записи без открытого контракта. */
+async function runPositionsFileSyncWithExchange(): Promise<string[]> {
+  const token = process.env.TINKOFF_TOKEN;
+  if (!token) return [];
+  const balance = await getAccountBalance(token);
+  if (!balance) return [];
+  if (!tradeExecutor) {
+    tradeExecutor = new TinkoffTradeManager();
+  } else {
+    tradeExecutor.reloadFromDisk();
+  }
+  return tradeExecutor.syncPositionsFileWithExchange(token, balance.accountId);
+}
+
 async function notifyUnexpectedPreviousShutdown(): Promise<void> {
   if (!previousSessionWasActive) return;
   const previousStart =
@@ -345,7 +372,7 @@ async function startWatchersOnce(): Promise<void> {
     return b?.rub ?? 0;
   };
 
-  stopWatchers = startAllWatchers(MARKET_FUTURES_TICKERS, {
+  stopWatchers = startAllWatchers([...MARKET_FUTURES_TICKERS], {
     token,
     onAlert: async (msg) => {
       for (const chatId of subscribers) {
@@ -366,7 +393,7 @@ async function startWatchersOnce(): Promise<void> {
 
 const welcomeMsg =
   'MOEX Bot\n\n' +
-  'Кнопки: Старт, Стоп, Статус, Рынок, Баланс, Мои заявки, Открытые позиции, Закрыть позицию, Статистика.';
+  'Кнопки: Старт, Стоп, Статус, Рынок, Баланс, Мои заявки, Открытые позиции, Закрыть позицию, Принуд. синхронизация (файл позиций ↔ биржа), Статистика.';
 
 async function handleStart(ctx: any): Promise<void> {
   subscribers.add(ctx.chat.id);
@@ -414,7 +441,7 @@ async function handleMarket(ctx: any): Promise<void> {
     return;
   }
   try {
-    const prices = await getFuturesLastPrices(token, MARKET_FUTURES_TICKERS);
+    const prices = await getFuturesLastPrices(token, [...MARKET_FUTURES_TICKERS]);
     if (prices.length === 0) {
       await bot.api.editMessageText(
         ctx.chat.id,
@@ -550,7 +577,7 @@ bot.on('message:text', async (ctx) => {
     }
     // Подставляем тикер по instrument_uid для известных фьючерсов
     const uidToTicker: Record<string, string> = {};
-    for (const ticker of MARKET_FUTURES_TICKERS) {
+    for (const ticker of tickersForPositionUi()) {
       const info = await getFutureInstrument(token, ticker);
       if (info) uidToTicker[info.uid] = ticker;
     }
@@ -595,7 +622,7 @@ bot.on('message:text', async (ctx) => {
     // Маппинг uid → ticker + данные инструмента
     const uidToTicker: Record<string, string> = {};
     const uidToInstrument: Record<string, { minPriceIncrement: number; minPriceIncrementAmount: number }> = {};
-    for (const ticker of MARKET_FUTURES_TICKERS) {
+    for (const ticker of tickersForPositionUi()) {
       const info = await getFutureInstrument(token, ticker);
       if (info) {
         uidToTicker[info.uid] = ticker;
@@ -608,7 +635,7 @@ bot.on('message:text', async (ctx) => {
 
     const fmtRub = (v: number) => v.toLocaleString('ru-RU', { maximumFractionDigits: 0 });
 
-    const lastPrices = await getFuturesLastPrices(token, MARKET_FUTURES_TICKERS);
+    const lastPrices = await getFuturesLastPrices(token, [...tickersForPositionUi()]);
     const priceByTicker = new Map(lastPrices.map((p) => [p.ticker, p]));
 
     const lines: string[] = [];
@@ -682,7 +709,7 @@ bot.on('message:text', async (ctx) => {
       return;
     }
     const uidToTicker: Record<string, string> = {};
-    for (const ticker of MARKET_FUTURES_TICKERS) {
+    for (const ticker of tickersForPositionUi()) {
       const info = await getFutureInstrument(token, ticker);
       if (info) uidToTicker[info.uid] = ticker;
     }
@@ -697,6 +724,33 @@ bot.on('message:text', async (ctx) => {
       ).row();
     }
     await ctx.reply('Выберите позицию для закрытия:', { reply_markup: kb });
+    return;
+  }
+
+  // Файл позиций ↔ биржа: убрать «призраки» (запись в файле без открытого контракта)
+  if (text === 'Принуд. синхронизация') {
+    const token = process.env.TINKOFF_TOKEN;
+    if (!token) {
+      await ctx.reply('Не задан TINKOFF_TOKEN.', { reply_markup: mainKeyboard });
+      return;
+    }
+    const balance = await getAccountBalance(token);
+    if (!balance) {
+      await ctx.reply('Не удалось получить счёт.', { reply_markup: mainKeyboard });
+      return;
+    }
+    const removed = await runPositionsFileSyncWithExchange();
+    if (removed.length === 0) {
+      await ctx.reply(
+        'Синхронизация: все записи в файле позиций соответствуют открытым контрактам на бирже (лишних нет).',
+        { reply_markup: mainKeyboard }
+      );
+    } else {
+      await ctx.reply(
+        `Синхронизация: из файла удалены тикеры без открытой позиции на бирже:\n${removed.map((t) => `• ${t}`).join('\n')}`,
+        { reply_markup: mainKeyboard }
+      );
+    }
     return;
   }
 
@@ -728,7 +782,7 @@ bot.on('callback_query:data', async (ctx) => {
   }
 
   const uidToTicker: Record<string, string> = {};
-  for (const ticker of MARKET_FUTURES_TICKERS) {
+  for (const ticker of tickersForPositionUi()) {
     const info = await getFutureInstrument(token, ticker);
     if (info) uidToTicker[info.uid] = ticker;
   }
@@ -749,7 +803,7 @@ bot.on('callback_query:data', async (ctx) => {
 
   // 30034 = not enough balance (песочница) — пополняем только нехватающую сумму
   if (!result.success && result.message?.includes('30034')) {
-    const priceInfo = (await getFuturesLastPrices(token, MARKET_FUTURES_TICKERS)).find(
+    const priceInfo = (await getFuturesLastPrices(token, [...tickersForPositionUi()])).find(
       (p) => uidToTicker[instrumentUid] === p.ticker
     );
     const instr = ticker ? await getFutureInstrument(token, ticker) : null;
@@ -782,7 +836,7 @@ bot.on('callback_query:data', async (ctx) => {
   }
 
   if (result.success && tradeExecutor && ticker && pos) {
-    const lastPrices = await getFuturesLastPrices(token, MARKET_FUTURES_TICKERS);
+    const lastPrices = await getFuturesLastPrices(token, [...tickersForPositionUi()]);
     const priceInfo = lastPrices.find((p) => p.ticker === ticker);
     const exitPrice = priceInfo?.lastPrice ?? pos.entryPrice;
     const priceDiff = pos.side === 'LONG' ? exitPrice - pos.entryPrice : pos.entryPrice - exitPrice;
@@ -859,5 +913,13 @@ bot.start({
   onStart: async (info) => {
     console.log(`Bot @${info.username} is running`);
     await notifyUnexpectedPreviousShutdown();
+    try {
+      const removed = await runPositionsFileSyncWithExchange();
+      if (removed.length > 0) {
+        console.log('[BOT] Старт: синхронизация файла позиций с биржей, удалено:', removed.join(', '));
+      }
+    } catch (e) {
+      console.error('[BOT] Старт: не удалось синхронизировать файл позиций с биржей:', e);
+    }
   },
 });

@@ -59,6 +59,18 @@ function generateOrderId(): string {
   return randomUUID();
 }
 
+function positionMatchesExchange(
+  pos: TradePosition,
+  exchange: { instrumentUid: string; balance: number }[]
+): boolean {
+  const ep = exchange.find((e) => e.instrumentUid === pos.instrumentId);
+  if (!ep) return false;
+  const bal = ep.balance ?? 0;
+  if (bal === 0) return false;
+  const exchangeLong = bal > 0;
+  return pos.side === 'LONG' ? exchangeLong : !exchangeLong;
+}
+
 export class TinkoffTradeManager {
   private readonly positions = new Map<string, TradePosition>();
 
@@ -126,6 +138,28 @@ export class TinkoffTradeManager {
   /** Перезагрузить позиции с диска (после закрытия через скрипт или другой процесс). */
   reloadFromDisk(): void {
     this.loadFromDisk(true);
+  }
+
+  /**
+   * Удаляет из памяти и файла записи, для которых на бирже нет соответствующей открытой позиции
+   * (тот же instrument_uid и сторона LONG/SHORT по знаку balance).
+   */
+  async syncPositionsFileWithExchange(token: string, accountId: string): Promise<string[]> {
+    const exchange = await getFuturesPositions(token, accountId);
+    const removed: string[] = [];
+    for (const pos of [...this.getAllPositions()]) {
+      if (!positionMatchesExchange(pos, exchange)) {
+        this.positions.delete(pos.ticker);
+        removed.push(pos.ticker);
+      }
+    }
+    if (removed.length > 0) {
+      this.saveToDisk();
+      console.log(
+        `[TRADE] Синхронизация с биржей: удалены из файла «призраки» (${removed.length}): ${removed.join(', ')}`
+      );
+    }
+    return removed;
   }
 
   /**
