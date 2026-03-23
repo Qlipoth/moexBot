@@ -797,8 +797,13 @@ bot.on('message:text', async (ctx) => {
       );
       return;
     }
-    await ctx.replyWithDocument(new InputFile(buf, 'moex-positions.jsonl'), {
-      caption: `moex-positions.jsonl\n${filePath}`,
+    // Telegram sendDocument не принимает файл размером 0 байт
+    const wasEmpty = buf.length === 0;
+    const payload = wasEmpty ? Buffer.from('\n', 'utf-8') : buf;
+    await ctx.replyWithDocument(new InputFile(payload, 'moex-positions.jsonl'), {
+      caption:
+        (wasEmpty ? 'Файл пуст (позиций нет). Отправлена одна пустая строка для совместимости с API.\n\n' : '') +
+        `moex-positions.jsonl\n${filePath}`,
       reply_markup: mainKeyboard,
     });
     return;
