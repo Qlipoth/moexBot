@@ -11,6 +11,7 @@ import {
   merge1hCandles,
 } from './candleBuilder.js';
 import { adaptiveBollingerStrategy } from './adaptiveBollingerStrategy.js';
+import type { TradingStrategy } from './tradingStrategy.js';
 import { tradingState } from '../core/tradingState.js';
 import {
   isOverDailyLossLimit,
@@ -46,6 +47,12 @@ export interface WatcherOptions {
   tradeExecutor?: TinkoffTradeManager;
   /** Функция для получения баланса в рублях (для расчёта размера позиции). */
   balanceProvider?: () => Promise<number>;
+  /**
+   * Торговая стратегия для данного вотчера.
+   * По умолчанию: adaptiveBollingerStrategy.
+   * MEAN exit применяется только если стратегия возвращает `middle` в getContext().
+   */
+  strategy?: TradingStrategy;
 }
 
 /**
@@ -63,7 +70,9 @@ export function startMarketWatcher(
     initialDelayMs = 0,
     tradeExecutor,
     balanceProvider,
+    strategy = adaptiveBollingerStrategy,
   } = options;
+  const strategyName = strategy.name ?? 'Strategy';
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
   const tick = async (): Promise<boolean> => {
@@ -111,14 +120,16 @@ export function startMarketWatcher(
           if (trigger === 'STOP') exitReason = 'стоп-лосс';
           else if (trigger === 'TAKE') exitReason = 'тейк-профит';
 
+          // MEAN exit — только если стратегия возвращает middle (mean-reversion)
           if (!exitReason) {
             const pos = tradeExecutor.getPosition(ticker);
-            const ctx = adaptiveBollingerStrategy.getContext(ticker);
-            if (pos && ctx && Number.isFinite(ctx.middle) && ctx.middle > 0) {
+            const ctx = strategy.getContext(ticker);
+            const middle = ctx != null && 'middle' in ctx ? (ctx.middle as number | undefined) : undefined;
+            if (pos && middle != null && Number.isFinite(middle) && middle > 0) {
               const reachedMiddle =
                 pos.side === 'LONG'
-                  ? currentPrice >= ctx.middle * (1 - MEAN_EXIT_TOLERANCE)
-                  : currentPrice <= ctx.middle * (1 + MEAN_EXIT_TOLERANCE);
+                  ? currentPrice >= middle * (1 - MEAN_EXIT_TOLERANCE)
+                  : currentPrice <= middle * (1 + MEAN_EXIT_TOLERANCE);
               const inProfit =
                 pos.side === 'LONG'
                   ? currentPrice > pos.entryPrice
@@ -158,18 +169,22 @@ export function startMarketWatcher(
         }
       }
 
-      if (!adaptiveBollingerStrategy.isSupported(ticker)) return true;
+      if (strategy.isSupported && !strategy.isSupported(ticker)) return true;
 
-      const adaptive = adaptiveBollingerStrategy.getSignal(ticker);
-      const scoreLog =
-        adaptive.signal === 'NONE'
-          ? `[Bollinger NO_SETUP] ${ticker} L=${adaptive.longScore} S=${adaptive.shortScore} (${adaptive.entrySignal})`
-          : `[Bollinger] ${ticker} 🟢L=${adaptive.longScore} 🔴S=${adaptive.shortScore} signal=${adaptive.signal}`;
-      console.log(scoreLog);
+      const adaptive = strategy.getSignal(ticker);
+      if (adaptive.longScore != null || adaptive.shortScore != null) {
+        const scoreLog =
+          adaptive.signal === 'NONE'
+            ? `[${strategyName} NO_SETUP] ${ticker} L=${adaptive.longScore} S=${adaptive.shortScore} (${adaptive.entrySignal ?? ''})`
+            : `[${strategyName}] ${ticker} 🟢L=${adaptive.longScore} 🔴S=${adaptive.shortScore} signal=${adaptive.signal}`;
+        console.log(scoreLog);
+      } else {
+        console.log(`[${strategyName}] ${ticker} signal=${adaptive.signal}`);
+      }
 
       if (!adaptive.ready || adaptive.signal === 'NONE') return true;
 
-      const confirmed = adaptiveBollingerStrategy.confirmEntry(
+      const confirmed = strategy.confirmEntry(
         ticker,
         adaptive.signal as 'LONG' | 'SHORT'
       );
@@ -222,7 +237,7 @@ export function startMarketWatcher(
         if (balanceRub <= 0) {
           console.log(`[WATCHER] ${ticker}: баланс ${balanceRub} ₽, нельзя открыть`);
         } else {
-          const ctx = adaptiveBollingerStrategy.getContext(ticker);
+          const ctx = strategy.getContext(ticker);
           let stopPrice: number | null = null;
           if (ctx && Number.isFinite(ctx.atr) && ctx.atr > 0) {
             stopPrice =
@@ -249,8 +264,10 @@ export function startMarketWatcher(
                   `✅ *${ticker}: ВХОД В СДЕЛКУ*\n` +
                     `Сигнал: ${sideStr}\n` +
                     `Цена: ${entryPrice}\n` +
-                    `Score: L:${adaptive.longScore} S:${adaptive.shortScore}\n` +
-                    `(Bollinger 1h)`
+                    (adaptive.longScore != null
+                      ? `Score: L:${adaptive.longScore} S:${adaptive.shortScore}\n`
+                      : '') +
+                    `(${strategyName} 1h)`
                 )
               );
               return true;

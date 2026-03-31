@@ -49,6 +49,7 @@ const MIN_BOLLINGER_WIDTH_BY_TICKER: Record<string, number> = {
 const DEFAULT_MIN_BOLLINGER_WIDTH_PCT = 0.005;
 
 interface BollingerContext {
+  [key: string]: unknown;
   upper: number;
   lower: number;
   middle: number;
@@ -127,6 +128,7 @@ function getEmaBias(ctx: BollingerContext): number {
 const EMA_TREND_TOLERANCE = 0.003;
 
 export const adaptiveBollingerStrategy = {
+  name: 'AdaptiveBollinger' as const,
   getContext(ticker: string): BollingerContext | null {
     return buildContext(ticker);
   },
