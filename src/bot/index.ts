@@ -1051,5 +1051,23 @@ bot.start({
     } catch (e) {
       console.error('[BOT] Старт: не удалось синхронизировать файл позиций с биржей:', e);
     }
+
+    // Авто-старт торговли: добавляем alertChatIds в подписчики и включаем вотчеры
+    for (const id of alertChatIdsFromEnv) subscribers.add(id);
+    tradingState.enable();
+    persistRuntimeState({ sessionActive: true, tradingEnabled: true, closeOnlyMode: false });
+    await startWatchersOnce();
+    console.log('[BOT] Авто-старт торговли выполнен');
+
+    const autoStartChatIds = getNotificationChatIds();
+    for (const chatId of autoStartChatIds) {
+      try {
+        await bot.api.sendMessage(chatId, '🚀 Бот запущен, торговля включена автоматически.', {
+          reply_markup: mainKeyboard,
+        });
+      } catch (e) {
+        console.error(`[BOT] Авто-старт: не удалось отправить уведомление в ${chatId}:`, e);
+      }
+    }
   },
 });
