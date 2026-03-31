@@ -548,6 +548,14 @@ bot.command('stats', handleStats);
 bot.on('message:text', async (ctx) => {
   const text = ctx.message.text?.trim();
 
+  // Авто-подписка после рестарта: если торговля уже активна, но чат потерял подписку
+  // (например, из-за эфемерного /tmp на Koyeb), восстанавливаем её без лишнего приветствия
+  if (tradingState.isEnabled() && !subscribers.has(ctx.chat.id) && text !== 'Стоп') {
+    subscribers.add(ctx.chat.id);
+    persistRuntimeState();
+    console.log(`[BOT] Авто-подписка восстановлена для chat ${ctx.chat.id}`);
+  }
+
   if (text === 'Старт') return handleStart(ctx);
   if (text === 'Стоп') return handleStop(ctx);
   if (text === 'Статус') return handleStatus(ctx);
