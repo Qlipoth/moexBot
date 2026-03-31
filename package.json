@@ -12,11 +12,18 @@
     "preview": "node dist/bot.js",
     "start": "tsx src/index.ts",
     "calibrate": "tsx scripts/calibrateBollinger.ts",
+    "download": "tsx scripts/downloadCandles.ts",
     "backtest": "tsx scripts/runBacktest.ts",
     "backtest:all": "tsx scripts/runBacktestAll.ts",
+    "backtest:cached": "tsx scripts/runBacktestAllCached.ts",
+    "backtest:ema": "tsx scripts/runEmaCrossoverBacktestCached.ts",
+    "backtest:donchian": "tsx scripts/runDonchianBreakoutBacktestCached.ts",
+    "backtest:rsi": "tsx scripts/runRsiMomentumBacktestCached.ts",
+    "calibrate:rsi": "tsx scripts/calibrateRsiMomentum.ts",
     "sandbox:reset": "tsx scripts/resetSandbox.ts",
     "close-position": "tsx scripts/closePosition.ts",
-    "list-positions": "tsx scripts/listPositions.ts"
+    "list-positions": "tsx scripts/listPositions.ts",
+    "calibrate:ema": "tsx scripts/calibrateEmaCrossover.ts"
   },
   "keywords": [
     "moex",

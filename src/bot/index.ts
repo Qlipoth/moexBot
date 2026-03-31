@@ -24,6 +24,7 @@ import {
 import { tradingState } from '../core/tradingState.js';
 import { getTradeStats, recordClosedTrade } from '../core/tradeStats.js';
 import { startAllWatchers } from '../market/watcher.js';
+import { emaCrossoverStrategy } from '../market/emaCrossoverStrategy.js';
 import {
   TinkoffTradeManager,
   getMoexPositionsFilePath,
@@ -42,6 +43,17 @@ const MARKET_FUTURES_TICKERS = [
   'SBERF',
   'GAZPF',
 ] as const;
+
+/**
+ * Тикеры на стратегии EMA Crossover (EMA 12/26, откалибровано).
+ * На бэктесте за год: +71k ₽ vs +16k ₽ у AdaptiveBollinger на IMOEXF.
+ */
+const EMA_CROSSOVER_TICKERS = ['IMOEXF'] as const;
+
+/** Тикеры на AdaptiveBollinger (все остальные) */
+const BOLLINGER_TICKERS = MARKET_FUTURES_TICKERS.filter(
+  (t) => !(EMA_CROSSOVER_TICKERS as readonly string[]).includes(t)
+) as string[];
 
 /**
  * Тикеры только для UI: маппинг instrument_uid → тикер и цены (список позиций, закрытие).
@@ -390,21 +402,29 @@ async function startWatchersOnce(): Promise<void> {
     return b?.rub ?? 0;
   };
 
-  stopWatchers = startAllWatchers([...MARKET_FUTURES_TICKERS], {
-    token,
-    onAlert: async (msg) => {
-      for (const chatId of subscribers) {
-        try {
-          await bot.api.sendMessage(chatId, msg, { parse_mode: 'HTML' });
-        } catch (e) {
-          console.error(`Watcher alert to ${chatId}:`, e);
-        }
+  const onAlert = async (msg: string) => {
+    for (const chatId of subscribers) {
+      try {
+        await bot.api.sendMessage(chatId, msg, { parse_mode: 'HTML' });
+      } catch (e) {
+        console.error(`Watcher alert to ${chatId}:`, e);
       }
-    },
-    tradeExecutor,
-    balanceProvider,
+    }
+  };
+  const sharedOptions = { token, onAlert, tradeExecutor, balanceProvider };
+
+  const stopBollinger = startAllWatchers(BOLLINGER_TICKERS, sharedOptions);
+  const stopEmaCrossover = startAllWatchers([...EMA_CROSSOVER_TICKERS], {
+    ...sharedOptions,
+    strategy: emaCrossoverStrategy,
   });
-  console.log('Watchers started (Bollinger 1h,', MARKET_FUTURES_TICKERS.length, 'tickers)');
+  stopWatchers = () => {
+    stopBollinger();
+    stopEmaCrossover();
+  };
+  console.log(
+    `Watchers started: Bollinger (${BOLLINGER_TICKERS.length} тикеров), EmaCrossover (${EMA_CROSSOVER_TICKERS.length} тикеров)`
+  );
 }
 
 // ——— Команды ———
